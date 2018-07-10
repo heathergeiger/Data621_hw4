@@ -1,0 +1,1787 @@
+---
+title: 'Data 621 Homework 4: Predicting Car Insurance Claims'
+author: "Heather Geiger"
+date: "July 8, 2018"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 3
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+---
+
+#Introduction
+
+Here is a description of the assignment and data as provided by Marcus Ellis.
+
+In this homework assignment, you will explore, analyze and model a data set containing approximately 8000 records representing a customer at an auto insurance company. Each record has two response variables. The first response variable, TARGET_FLAG, is a 1 or a 0. A “1” means that the person was in a car crash. A zero means that the person was not in a car crash. The second response variable is TARGET_AMT. This value is zero if the person did not crash their car. But if they did crash their car, this number will be a value greater than zero.
+
+Your objective is to build multiple linear regression and binary logistic regression models on the training data to predict the probability that a person will crash their car and also the amount of money it will cost if the person does crash their car. You can only use the variables given to you (or variables that you derive from the variables provided). Below is a short description of the variables of interest in the data set:
+
+1. INDEX - ID Variable (do not use)
+2. TARGET_FLAG - Was car in a crash? 1=YES 0=NO
+3. TARGET_AMT - If car was in a crash, what was the cost?
+4. AGE - Age of the driver. Very young people tend to be risky. Maybe very old people also.
+5. BLUEBOOK - Value of vehicle. Probably affects payout if there is a crash.
+6. CAR_AGE - Vehicle age. Probably affects payout if there is a crash.
+7. CAR_TYPE - Type of car. Probably affects payout if there is a crash.
+8. CAR_USE - Vehicle use. Commercial vehicles are driven more, so might increase probability of collision.
+9. CLM_FREQ - # claims (past 5 years). Predicted to be positively correlated with TARGET_FLAG.
+10. EDUCATION - Max education level. Predicted to be negatively correlated with TARGET_FLAG.
+11. HOMEKIDS - # children at home.
+12. HOME_VAL - Home value. Having a nonzero value here predicted to be negatively correlated with TARGET_FLAG, as home owners tend to drive more responsibly in theory.
+13. INCOME - Income. Predicted to be negatively correlated with TARGET_FLAG, as in theory rich people tend to get into fewer crashes.
+14. JOB - Job category. In theory, white collar jobs tend to be safer.
+15. KIDSDRIV - # driving children. Predicted to be positively correlated with TARGET_FLAG.
+16. MSTATUS - Marital status. In theory, married people drive more safely.
+17. MVR_PTS - Motor vehicle record points. Predicted to be positively correlated with TARGET_FLAG.
+18. OLDCLAIM - Total claim value (past 5 years). Predicted to be positively correlated with TARGET_AMT.
+19. PARENT1 - Single parent.
+20. RED_CAR - A red car. Urban legend predicts this to be positively correlated with TARGET_FLAG, but is this really true?
+21. REVOKED - License revoked (past 7 years). Predicted to be positively correlated with TARGET_FLAG.
+22. SEX - Gender. Urban legend predicts being male to be positively correlated with TARGET_FLAG, but is this really true?
+23. TIF - Time in force. People who have been customers for a long time are usually more safe.
+24. TRAVTIME - Distance to work. Long drives to work usually suggest greater risk.
+25. URBANICITY - Urban vs. rural home/work area. 
+26. YOJ - Years on job. Predicted to be negatively correlated with TARGET_FLAG.
+
+# Libraries
+
+We will use tidyverse libraries including ggplot2, tidyr, dplyr, and stringr to process this data.
+
+We will also use gridExtra to be able to place ggplot2 plots side-by-side.
+
+Also use caret and pROC when evaluating models.
+
+```{r load-libs, echo=FALSE, eval=TRUE,message=FALSE,warning=FALSE}
+library(ggplot2)
+library(stringr)
+library(tidyr)
+library(dplyr)
+library(gridExtra)
+library(caret)
+library(pROC)
+```
+
+# Data exploration
+
+##Basic data exploration
+
+Start by reading in and formatting the data.
+
+We read in the data from here. Note, the file was already manually edited to remove non-standard characters.
+
+https://raw.githubusercontent.com/heathergeiger/Data621_hw4/master/insurance_training_data.csv
+
+Then, print the number of non-NA values per column.
+
+```{r read-in-data, echo=FALSE, eval=TRUE}
+insurance <- read.csv("https://raw.githubusercontent.com/heathergeiger/Data621_hw4/master/insurance_training_data.csv",header=TRUE,stringsAsFactors=FALSE)
+
+insurance <- insurance[,setdiff(colnames(insurance),"INDEX")]
+
+for(column in c("INCOME","HOME_VAL","BLUEBOOK","OLDCLAIM"))
+{
+insurance[,column] <- str_replace_all(insurance[,column],pattern='\\$',replace='')
+insurance[,column] <- str_replace_all(insurance[,column],pattern=',',replace='')
+insurance[,column] <- as.numeric(as.vector(insurance[,column]))
+}
+```
+
+```{r num-non-NA-per-column, echo=FALSE, eval=TRUE}
+print("Total number of records in data:")
+nrow(insurance)
+
+print("Number of non-NA values per variable in data:")
+
+non_NA_per_column <- insurance %>%
+gather() %>%
+na.omit(value) %>%
+count(key)
+
+non_NA_per_column <- data.frame(non_NA_per_column)
+
+non_NA_per_column <- non_NA_per_column[order(non_NA_per_column[,2]),]
+
+data.frame(Variable = non_NA_per_column[,1],n = non_NA_per_column[,2])
+```
+
+We find around 400-500 NAs for CAR_AGE, HOME_VAL, YOJ, and INCOME, and a handful of NAs for AGE.
+
+While we are reading in data, read in the evaluation data as well, and format the same way.
+
+This data is available here:
+
+https://raw.githubusercontent.com/heathergeiger/Data621_hw4/master/insurance-evaluation-data.csv
+
+```{r read-in-evaluation, echo=FALSE, eval=TRUE}
+evaluation <- read.csv("https://raw.githubusercontent.com/heathergeiger/Data621_hw4/master/insurance-evaluation-data.csv",header=TRUE,stringsAsFactors=FALSE)
+
+evaluation <- evaluation[,setdiff(colnames(evaluation),"INDEX")]
+
+for(column in c("INCOME","HOME_VAL","BLUEBOOK","OLDCLAIM"))
+{
+evaluation[,column] <- str_replace_all(evaluation[,column],pattern='\\$',replace='')
+evaluation[,column] <- str_replace_all(evaluation[,column],pattern=',',replace='')
+evaluation[,column] <- as.numeric(as.vector(evaluation[,column]))
+}
+```
+
+Next, find the number of unique values per column in the training data.
+
+```{r num-unique-per-column, echo=FALSE, eval=TRUE,message=FALSE,warning=FALSE}
+num_unique_values_per_variable <- insurance %>%
+gather() %>%
+group_by(key) %>%
+summarize(uniques = n_distinct(value))
+
+num_unique_values_per_variable <- data.frame(num_unique_values_per_variable,stringsAsFactors=FALSE)
+
+num_unique_values_per_variable <- data.frame(Variable = num_unique_values_per_variable[,1],Num.uniques = num_unique_values_per_variable[,2],stringsAsFactors=FALSE)
+
+num_unique_values_per_variable$Variable <- as.vector(num_unique_values_per_variable$Variable)
+
+num_unique_values_per_variable[order(num_unique_values_per_variable[,2]),]
+
+print("Levels of EDUCATION:")
+unique(insurance$EDUCATION)
+print("Levels of HOMEKIDS:")
+unique(insurance$HOMEKIDS[order(insurance$HOMEKIDS)])
+```
+
+We find a number of variables are either binary (2 unique values), or have only a few unique values. For example, the 5 unique values in EDUCATION correspond to a few different possible levels of education.
+
+We also find a few multi-level variables that may be best converted to binary. For example, it is likely that HOMEKIDS (# children at home) may be most relevant to tell us whether or not there are children at home, while the exact number of children may be less relevant.
+
+##Exploring missing values
+
+The NAs for HOME_VAL are relatively easily solved. It seems a reasonable approach here would be to assume that individuals do not own a home unless a home value is given. So we can simply replace the NAs with 0's.
+
+We saw that CAR_AGE, YOJ, and INCOME have a few hundred NAs. Do these tend to occur for the same records, or in different records?
+
+```{r records-with-oneplus-NAs, echo=FALSE, eval=TRUE}
+NA_var_matrix <- data.frame(CAR.AGE = rep(0,times=nrow(insurance)),YOJ = rep(0,times=nrow(insurance)),INCOME = rep(0,times=nrow(insurance)),stringsAsFactors=FALSE)
+
+NA_var_matrix[which(is.na(insurance$CAR_AGE) == TRUE),1] <- 1
+NA_var_matrix[which(is.na(insurance$YOJ) == TRUE),2] <- 1
+NA_var_matrix[which(is.na(insurance$INCOME) == TRUE),3] <- 1
+
+print("Number of NAs for CAR_AGE, HOME_VAL, YOJ, and INCOME per record:")
+table(rowSums(NA_var_matrix))
+
+NA_var_matrix_two_NAs <- NA_var_matrix[which(rowSums(NA_var_matrix) >= 2),]
+
+NA_var_matrix_two_NAs[which(NA_var_matrix_two_NAs[,1] == 1),1] <- "CAR_AGE"
+NA_var_matrix_two_NAs[which(NA_var_matrix_two_NAs[,2] == 1),2] <- "YOJ"
+NA_var_matrix_two_NAs[which(NA_var_matrix_two_NAs[,3] == 1),3] <- "INCOME" 
+
+print("Table of most common combinations of 2+ NAs:")
+table(paste0(NA_var_matrix_two_NAs[,1],"/",NA_var_matrix_two_NAs[,2],"/",NA_var_matrix_two_NAs[,3]))
+```
+
+We find that most records only have an NA for one of these variables.
+
+The few times records do have two or more NAs, it is pretty random which combination of variables will be NA.
+
+For the 6 records with AGE = NA, let's just print those rows.
+
+```{r print-age-NA, echo=FALSE, eval=TRUE}
+insurance[which(is.na(insurance$AGE) == TRUE),]
+```
+
+There doesn't seem to be anything especially unusual about these records.
+
+We can decide later on if we want to try to use the other variables to infer age for these, or if it might be better to just discard these records given how few of them there are.
+
+For YOJ and INCOME, what kind of job is listed when these are NA?
+
+```{r jobs-for-NA-YOJ-and-INCOME, echo=FALSE, eval=TRUE}
+print("Jobs when YOJ = NA:")
+table(insurance$JOB[which(is.na(insurance$YOJ) == TRUE)])
+print("Jobs for when INCOME = NA:")
+table(insurance$JOB[which(is.na(insurance$INCOME) == TRUE)])
+```
+
+We find that most records with these fields as NA still have a job listed, including many that have a traditional income-paying job listed rather than home maker or student.
+
+## Distribution of variables
+
+### Frequency of binary variables
+
+Let's start with a simple barplot to show the percent of records with each level of the binary variables.
+
+```{r barplot-binary-vars, echo=FALSE, eval=TRUE}
+binary_variables <- num_unique_values_per_variable$Variable[num_unique_values_per_variable$Num.uniques == 2]
+
+binary_variables_data <- insurance[,binary_variables]
+
+colnames(binary_variables_data) <- plyr::mapvalues(colnames(binary_variables_data),
+	from=c("CAR_USE","MSTATUS","PARENT1","RED_CAR","REVOKED","SEX","TARGET_FLAG","URBANICITY"),
+	to=c("Commercial_vehicle","Married","Single_parent","Red_car","Revoked","Sex_male","Car_crash","Urban_not_rural"))
+
+binary_variables_data[,"Commercial_vehicle"] <- ifelse(binary_variables_data[,"Commercial_vehicle"] == "Commercial","True","False")
+binary_variables_data[,"Married"] <- ifelse(binary_variables_data[,"Married"] == "Yes","True","False")
+binary_variables_data[,"Single_parent"] <- ifelse(binary_variables_data[,"Single_parent"] == "Yes","True","False")
+binary_variables_data[,"Red_car"] <- ifelse(binary_variables_data[,"Red_car"] == "yes","True","False")
+binary_variables_data[,"Revoked"] <- ifelse(binary_variables_data[,"Revoked"] == "Yes","True","False")
+binary_variables_data[,"Sex_male"] <- ifelse(binary_variables_data[,"Sex_male"] == "M","True","False")
+binary_variables_data[,"Car_crash"] <- ifelse(binary_variables_data[,"Car_crash"] == 1,"True","False")
+binary_variables_data[,"Urban_not_rural"] <- ifelse(binary_variables_data[,"Urban_not_rural"] == "Highly Urban/ Urban","True","False")
+
+binary_variables_data <- gather(binary_variables_data,"variable","value")
+
+binary_variables_data <- binary_variables_data %>%
+	group_by(variable) %>%
+	count(value)
+
+binary_variables_data$n <- (binary_variables_data$n*100)/nrow(insurance)
+
+colnames(binary_variables_data)[3] <- "percent"
+
+binary_variables_data$variable <- factor(binary_variables_data$variable)
+binary_variables_data$value <- factor(binary_variables_data$value,levels=c("False","True"))
+
+ggplot(binary_variables_data,
+aes(variable,percent)) +
+geom_bar(stat = "identity", aes(fill = value)) +
+xlab("Variable") +
+ylab("Percent of records") +
+theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+We find that a bit over 25% of records are for individuals who were in a car crash (our target for the binary logistic regression).
+
+Some predictor binary variables are relatively evenly split (e.g. a 60/40 split for whether people are married, or a nearly 50/50 split by sex). Others are less even (e.g. it looks like around 80% of records are for individuals living or working in an urban area).
+
+### Frequency of factor and discrete numeric variables
+
+Next, let's look at the variables that are not binary, but have relatively few unique values.
+
+Here we will look at variables that are clearly factors (like education). We will also look at some of those that are discrete numeric, but where there are few enough possible values that it may be more informative to display them as a barplot rather than a histogram.
+
+```{r barplot-discrete-numeric-0-to-5, echo=FALSE, eval=TRUE}
+variables_with_3_to_9_levels_data_discrete_numeric <- insurance[,c("CLM_FREQ","HOMEKIDS","KIDSDRIV")]
+
+variables_with_3_to_9_levels_data_discrete_numeric <- gather(variables_with_3_to_9_levels_data_discrete_numeric,"variable","value")
+
+variables_with_3_to_9_levels_data_discrete_numeric <- variables_with_3_to_9_levels_data_discrete_numeric %>%
+	group_by(variable) %>%
+	count(value)
+
+variables_with_3_to_9_levels_data_discrete_numeric$n <- (variables_with_3_to_9_levels_data_discrete_numeric$n*100)/nrow(insurance)
+
+colnames(variables_with_3_to_9_levels_data_discrete_numeric)[3] <- "percent"
+
+variables_with_3_to_9_levels_data_discrete_numeric$variable <- factor(variables_with_3_to_9_levels_data_discrete_numeric$variable)
+variables_with_3_to_9_levels_data_discrete_numeric$value <- factor(variables_with_3_to_9_levels_data_discrete_numeric$value,levels=rev(0:5))
+
+ggplot(variables_with_3_to_9_levels_data_discrete_numeric,
+aes(variable,percent)) +
+geom_bar(stat = "identity", aes(fill = value),width=0.5) +
+xlab("Variable") +
+ylab("Percent of records") +
+theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+scale_fill_manual(values = rev(c("#999999","#E69F00", "#56B4E9", "#009E73", "#F0E442","#CC79A7")))
+```
+
+```{r barplot-factors-non-binary, echo=FALSE, eval=TRUE,fig.width=12,fig.height=8}
+education_table <- data.frame(table(insurance[,"EDUCATION"]))
+colnames(education_table) <- c("type","percent")
+education_table$type <- factor(education_table$type,levels=c("<High School","z_High School","Bachelors","Masters","PhD"))
+
+education_table$percent <- (education_table$percent*100)/nrow(insurance)
+
+education_barplot <- ggplot(education_table,
+aes(type,percent)) +
+geom_bar(stat = "identity",col="black",fill="darkgrey") +
+xlab("Education level") +
+ylab("Percent of records") +
+theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+cartype_table <- data.frame(table(insurance[,"CAR_TYPE"]))
+colnames(cartype_table) <- c("type","percent")
+
+cartype_table$percent <- (cartype_table$percent*100)/nrow(insurance)
+
+cartype_table$type <- factor(cartype_table$type,
+	levels=as.vector(cartype_table$type)[order(cartype_table$percent)])
+
+cartype_barplot <- ggplot(cartype_table,
+aes(type,percent)) +
+geom_bar(stat = "identity",col="black",fill="darkgrey") +
+xlab("Car type") +
+ylab("Percent of records") +
+theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+insurance[insurance[,"JOB"] == "","JOB"] <- "Not stated"
+
+job_table <- data.frame(table(insurance[,"JOB"]))
+colnames(job_table) <- c("type","percent")
+
+job_table$percent <- (job_table$percent*100)/nrow(insurance)
+
+job_table$type <- factor(job_table$type,
+	levels=as.vector(job_table$type)[order(job_table$percent)])
+
+jobs_barplot <- ggplot(job_table,
+aes(type,percent)) +
+geom_bar(stat = "identity",col="black",fill="darkgrey") +
+xlab("Job type") +
+ylab("Percent of records") +
+theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+grid.arrange(education_barplot,cartype_barplot,jobs_barplot,nrow=2)
+```
+
+```{r barplot-mvr-pts, echo=FALSE, eval=TRUE}
+mvr_pts <- insurance[,"MVR_PTS"]
+mvr_pts <- ifelse(mvr_pts >= 10,"10+ (up to 13)",as.character(mvr_pts))
+
+mvr_pts <- data.frame(table(mvr_pts))
+colnames(mvr_pts) <- c("number","percent")
+mvr_pts$percent <- (mvr_pts$percent*100)/nrow(insurance)
+mvr_pts$number <- factor(mvr_pts$number,levels=c(as.character(0:9),"10+ (up to 13)"))
+
+mvr_pts_barplot <- ggplot(mvr_pts,
+aes(number,percent)) +
+geom_bar(stat = "identity",col="black",fill="darkgrey") +
+xlab("Number of motor vehicle points") +
+ylab("Percent of records") +
+theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+geom_text(data=mvr_pts,aes(x=number,y=percent + 1,label=round(percent,digits=2)),vjust=0)
+
+mvr_pts_barplot
+```
+
+### Frequency of variables measuring number of years
+
+Variables CAR_AGE, TIF, and YOJ all measure a number of years. These variables are discrete numeric (all integers), but with more possible values than some of the other discrete numeric variables.
+
+We display the frequency of these by grouping into 5-year groups once the value of the variable is 5 or more.
+
+```{r barplot-vars-with-around-20-to-30-unique-values, echo=FALSE, eval=TRUE,message=FALSE,warning=FALSE,fig.width=12,fig.height=8}
+data_around_20_to_30_unique_value_vars <- insurance[,c("CAR_AGE","TIF","YOJ")]
+
+data_around_20_to_30_unique_value_vars <- gather(data_around_20_to_30_unique_value_vars,"variable","value")
+
+data_around_20_to_30_unique_value_vars <- data_around_20_to_30_unique_value_vars[data_around_20_to_30_unique_value_vars$value >= 0,] #Remove the record with the error for CAR_AGE where it is < 0.
+
+around_20_to_30_unique_value_vars_factorize <- data_around_20_to_30_unique_value_vars$value
+
+around_20_to_30_unique_value_vars_factorize <- plyr::mapvalues(around_20_to_30_unique_value_vars_factorize,
+	from=c(0:4,5:9,10:14,15:19,20:24,25:29),
+	to=c(as.character(0:4),rep(c("5-9","10-14","15-19","20-24","25+"),each=5)))
+
+data_around_20_to_30_unique_value_vars <- data.frame(variable = data_around_20_to_30_unique_value_vars$variable,
+	value = around_20_to_30_unique_value_vars_factorize,
+	stringsAsFactors=FALSE)
+
+data_around_20_to_30_unique_value_vars$value <- factor(data_around_20_to_30_unique_value_vars$value,
+	levels=c(as.character(0:4),"5-9","10-14","15-19","20-24","25+","Not stated"))
+
+freq_per_level_per_variable <- aggregate(value ~ variable,data=data_around_20_to_30_unique_value_vars,FUN=function(x)table(x))
+
+freq_per_level_per_variable <- data.frame(variable = freq_per_level_per_variable[,"variable"],
+	freq_per_level_per_variable[,"value"],
+	check.names=FALSE,
+	stringsAsFactors=FALSE)
+
+freq_per_level_per_variable[freq_per_level_per_variable$variable == "CAR_AGE","Not stated"] <- length(which(is.na(insurance[,"CAR_AGE"]) == TRUE))
+freq_per_level_per_variable[freq_per_level_per_variable$variable == "YOJ","Not stated"] <- length(which(is.na(insurance[,"YOJ"]) == TRUE))
+
+freq_per_level_per_variable[,2:ncol(freq_per_level_per_variable)] <- (freq_per_level_per_variable[,2:ncol(freq_per_level_per_variable)]*100)/nrow(insurance)
+
+rownames(freq_per_level_per_variable) <- c("CAR_AGE","TIF","YOJ")
+
+freq_per_level_per_variable <- freq_per_level_per_variable[,2:ncol(freq_per_level_per_variable)]
+
+freq_per_level_per_variable <- data.frame(variable = rep(c("CAR_AGE","TIF","YOJ"),times=ncol(freq_per_level_per_variable)),
+	gather(freq_per_level_per_variable,"level","percent"))
+
+freq_per_level_per_variable$level <- factor(freq_per_level_per_variable$level,
+	levels=c(as.character(0:4),"5-9","10-14","15-19","20-24","25+","Not stated"))
+
+ggplot(freq_per_level_per_variable,
+aes(level,percent)) +
+geom_bar(stat = "identity",col="black",fill="darkgrey") +
+xlab("Number of years") +
+ylab("Percent of records") +
+theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+geom_text(data=freq_per_level_per_variable,aes(x=level,y=percent + 1,label=round(percent,digits=2)),vjust=0,size=3) +
+facet_wrap(~variable,nrow=2) +
+ggtitle("Not shown - 1 record with error for CAR_AGE\n(CAR_AGE < 0)")
+```
+
+### Frequency of numeric variables with 50+ unique values
+
+Finally, we display the frequency of numeric variables with 50+ unique values using histograms.
+
+Although age is technically also a measure of the number of years, we will use a histogram rather than a barplot to display since it has more unique values than the other variables measuring the number of years.
+
+```{r barplot-zero-vs-nonzero-vs-NA-home-and-income, echo=FALSE, eval=TRUE,fig.width=12,fig.height=8}
+home_vals <- insurance[,"HOME_VAL"]
+home_vals[which(is.na(home_vals) == FALSE & home_vals > 0)] <- ">0"
+home_vals[which(is.na(home_vals) == TRUE)] <- "Not stated"
+
+home_vals <- data.frame(table(home_vals))
+colnames(home_vals) <- c("level","percent")
+
+home_vals$percent <- (home_vals$percent*100)/nrow(insurance)
+
+income_vals <- insurance[,"INCOME"]
+income_vals[which(is.na(income_vals) == FALSE & income_vals > 0)] <- ">0"
+income_vals[which(is.na(income_vals) == TRUE)] <- "Not stated"
+
+income_vals <- data.frame(table(income_vals))
+colnames(income_vals) <- c("level","percent")
+
+income_vals$percent <- (income_vals$percent*100)/nrow(insurance)
+
+home_and_income_vals <- data.frame(variable = rep(c("HOME_VAL","INCOME"),each=3),
+level = c(as.vector(home_vals$level),as.vector(income_vals$level)),
+percent = c(home_vals$percent,income_vals$percent),
+stringsAsFactors=FALSE)
+
+home_and_income_vals$level <- factor(home_and_income_vals$level,levels=c("0",">0","Not stated"))
+
+ggplot(home_and_income_vals,
+aes(level,percent)) +
+geom_bar(stat = "identity",col="black",fill="darkgrey",width=0.5) +
+ylab("Percent of records") +
+theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+geom_text(data=home_and_income_vals,aes(x=level,y=percent + 1,label=round(percent,digits=2)),vjust=0,size=3) +
+facet_wrap(~variable,nrow=1)
+```
+
+```{r hist-numeric-vars, echo=FALSE, eval=TRUE, fig.width=12,fig.height=8}
+numeric_variables <- num_unique_values_per_variable$Variable[num_unique_values_per_variable$Num.uniques >= 50]
+
+## [1] "AGE"        "BLUEBOOK"   "HOME_VAL"   "INCOME"     "OLDCLAIM"  
+## [6] "TARGET_AMT" "TRAVTIME"
+
+#Remove 0's from HOME_VAL and INCOME.
+
+#Also remove 0's from TARGET_AMT and OLDCLAIM, which is the same as filtering by TARGET_FLAG and CLM_FREQ > 0 respectively.
+
+par(mfrow=c(1,2))
+
+#range(insurance[,"AGE"],na.rm=TRUE)
+#range(insurance[,"TRAVTIME"])
+
+## [1] 16 81
+## [1]   5 142
+
+hist(insurance[,"AGE"],xlab="Values",ylab="Number of records",main="AGE (range 16-81)",labels=TRUE)
+hist(insurance[,"TRAVTIME"],xlab="Values",ylab="Number of records",main="TRAVTIME (range 5-142)",labels=TRUE)
+
+#BLUEBOOK, HOME_VAL, INCOME, OLDCLAIM, TARGET_AMT
+
+hist(log10(insurance[insurance$TARGET_AMT > 0,"TARGET_AMT"]),
+xlab="log10(values)",
+ylab="Number of records",
+main=paste0("TARGET AMT (when TARGET_FLAG == 1)\nRange = ",round(min(insurance[insurance$TARGET_AMT > 0,"TARGET_AMT"])),"-",round(max(insurance[insurance$TARGET_AMT > 0,"TARGET_AMT"]))),
+labels=TRUE)
+
+hist(log10(insurance[insurance$OLDCLAIM > 0,"OLDCLAIM"]),
+xlab="log10(values)",
+ylab="Number of records",
+main=paste0("OLDCLAIM (when CLM_FREQ > 0)\nRange = ",min(insurance[insurance$OLDCLAIM > 0,"OLDCLAIM"]),"-",max(insurance[insurance$OLDCLAIM > 0,"OLDCLAIM"])),
+labels=TRUE)
+
+par(mfrow=c(1,3))
+
+hist(log10(insurance[,"BLUEBOOK"]),
+xlab="log10(values)",
+ylab="Number of records",
+main=paste0("BLUEBOOK\nRange = ",min(insurance[,"BLUEBOOK"]),"-",max(insurance[,"BLUEBOOK"]),"\n# with BLUEBOOK exactly 1500 = ",length(which(insurance[,"BLUEBOOK"] == 1500))),
+labels=TRUE)
+
+hist(log10(insurance[insurance[,"HOME_VAL"] > 0,"HOME_VAL"]),
+xlab="log10(values)",
+ylab="Number of records",
+main=paste0("HOME_VAL > 0\nRange = ",min(insurance[insurance[,"HOME_VAL"] > 0,"HOME_VAL"],na.rm=TRUE),"-",max(insurance[insurance[,"HOME_VAL"] > 0,"HOME_VAL"],na.rm=TRUE)),
+labels=TRUE)
+
+hist(log10(insurance[insurance[,"INCOME"] > 0,"INCOME"]),
+xlab="log10(values)",
+ylab="Number of records",
+main=paste0("INCOME > 0\nRange = ",min(insurance[insurance[,"INCOME"] > 0,"INCOME"],na.rm=TRUE),"-",max(insurance[insurance[,"INCOME"] > 0,"INCOME"],na.rm=TRUE)),
+labels=TRUE)
+```
+
+## Correlation of predictor variables with TARGET_FLAG
+
+In this section, we will explore the correlation of predictor variables with TARGET_FLAG (binary variable of whether or not the individual has had a crash).
+
+### Correlation of binary predictor variables with TARGET_FLAG
+
+Start by looking at the frequency of crashes for each level of binary variables. Here, we will also include a few numeric variables that have been converted to binary.
+
+```{r binary-vars-vs-target-flag, echo=FALSE, eval=TRUE}
+binary_variables <- num_unique_values_per_variable$Variable[num_unique_values_per_variable$Num.uniques == 2]
+
+binary_variables_data <- insurance[,c(binary_variables,"HOME_VAL","CLM_FREQ","HOMEKIDS","KIDSDRIV")]
+
+colnames(binary_variables_data) <- plyr::mapvalues(colnames(binary_variables_data),
+        from=c("CAR_USE","MSTATUS","PARENT1","RED_CAR","REVOKED","SEX","TARGET_FLAG","URBANICITY","HOME_VAL","CLM_FREQ","HOMEKIDS","KIDSDRIV"),
+        to=c("Commercial_vehicle","Married","Single_parent","Red_car","Revoked","Sex_male","Car_crash","Urban_not_rural","Homeowner","Claim_in_5_yrs","1plus_kids_at_home","1plus_driving_children"))
+
+binary_variables_data[which(is.na(binary_variables_data[,"Homeowner"]) == TRUE),"Homeowner"]  <- 0
+
+binary_variables_data[,"Commercial_vehicle"] <- ifelse(binary_variables_data[,"Commercial_vehicle"] == "Commercial","True","False")
+binary_variables_data[,"Married"] <- ifelse(binary_variables_data[,"Married"] == "Yes","True","False")
+binary_variables_data[,"Single_parent"] <- ifelse(binary_variables_data[,"Single_parent"] == "Yes","True","False")
+binary_variables_data[,"Red_car"] <- ifelse(binary_variables_data[,"Red_car"] == "yes","True","False")
+binary_variables_data[,"Revoked"] <- ifelse(binary_variables_data[,"Revoked"] == "Yes","True","False")
+binary_variables_data[,"Sex_male"] <- ifelse(binary_variables_data[,"Sex_male"] == "M","True","False")
+binary_variables_data[,"Car_crash"] <- ifelse(binary_variables_data[,"Car_crash"] == 1,"True","False")
+binary_variables_data[,"Urban_not_rural"] <- ifelse(binary_variables_data[,"Urban_not_rural"] == "Highly Urban/ Urban","True","False")
+
+for(var in c("Homeowner","Claim_in_5_yrs","1plus_kids_at_home","1plus_driving_children"))
+{
+binary_variables_data[,var] <- ifelse(binary_variables_data[,var] > 0,"True","False")
+}
+
+percent_in_crash_per_binary_variable_level <- data.frame(variable = setdiff(colnames(binary_variables_data),"Car_crash"),
+	Percent.in.crash.when.true = rep(0,times=length(setdiff(colnames(binary_variables_data),"Car_crash"))),
+	Percent.in.crash.when.false = rep(0,times=length(setdiff(colnames(binary_variables_data),"Car_crash"))),
+	stringsAsFactors=FALSE)
+
+for(i in 1:length(setdiff(colnames(binary_variables_data),"Car_crash")))
+{
+var <- setdiff(colnames(binary_variables_data),"Car_crash")[i]
+percent_in_crash_when_true <- (length(which(binary_variables_data[,var] == "True" & binary_variables_data[,"Car_crash"] == "True"))*100)/length(which(binary_variables_data[,var] == "True"))
+percent_in_crash_when_false <- (length(which(binary_variables_data[,var] == "False" & binary_variables_data[,"Car_crash"] == "True"))*100)/length(which(binary_variables_data[,var] == "False"))
+percent_in_crash_per_binary_variable_level[i,2] <- percent_in_crash_when_true
+percent_in_crash_per_binary_variable_level[i,3] <- percent_in_crash_when_false
+}
+
+percent_in_crash_per_binary_variable_level_to_print <- percent_in_crash_per_binary_variable_level
+percent_in_crash_per_binary_variable_level_to_print[,2:3] <- round(percent_in_crash_per_binary_variable_level_to_print[,2:3],digits=2)
+colnames(percent_in_crash_per_binary_variable_level_to_print)[2:3] <- c("True","False")
+percent_in_crash_per_binary_variable_level_to_print <- data.frame(percent_in_crash_per_binary_variable_level_to_print,
+Difference = percent_in_crash_per_binary_variable_level_to_print$True - percent_in_crash_per_binary_variable_level_to_print$False)
+
+percent_in_crash_per_binary_variable_level <- data.frame(variable = rep(percent_in_crash_per_binary_variable_level$variable,times=2),
+gather(percent_in_crash_per_binary_variable_level[,2:3],"predictor.value","percent.in.crash"),
+stringsAsFactors=FALSE)
+
+percent_in_crash_per_binary_variable_level$predictor.value <- plyr::mapvalues(percent_in_crash_per_binary_variable_level$predictor.value,
+	from=c("Percent.in.crash.when.true","Percent.in.crash.when.false"),
+	to=c("True","False"))
+
+ggplot(percent_in_crash_per_binary_variable_level,
+aes(variable,percent.in.crash)) +
+geom_bar(stat = "identity", aes(fill = predictor.value),position="dodge") +
+xlab("Variable") +
+ylab("Percent of individuals with predictor value in crash") +
+theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+percent_in_crash_per_binary_variable_level_to_print
+```
+
+We find a less than 1% difference in the proportion of individuals with vs. without red cars who crash their vehicles.
+
+Surprisingly, we actually find that females have a very slightly higher (around 2%) crash rate than males. I would also be curious to see what the interaction is here with age. The hypothesis I've heard about sex and crash rates is more about young males (under 20 or 25) having higher crash rates. Depending on the distribution of drivers by sex within each age group, there might be a sex/age interaction effect that we are not able to see just by looking at sex alone.
+
+Other than that, we find a lot of the differences we might have predicted. Individuals driving commercial vehicles, unmarried individuals, those whose licenses have been revoked, urban drivers, those who do not own homes, those who have had a claim in the past five years, and those with driving teenagers in their family all have crashes at a higher rate.
+
+We also find that single parents and those with one or more children at home crash at a higher rate. On its own, we cannot really infer much about single parents from this as compared to those who parent with a partner. Since all single parents by definition have children, it is unclear whether or not it is them just being parents vs. them being single parents specifically that is linked to a higher rate of crashes. Let's see if we can disentangle this by looking at the single parent variable only within individuals that have one or more children at home.
+
+```{r single-vs-partnered-parents, echo=FALSE, eval=TRUE}
+single_vs_partnered_parents <- binary_variables_data[,c("Car_crash","1plus_kids_at_home","Single_parent")]
+single_vs_partnered_parents <- single_vs_partnered_parents[single_vs_partnered_parents[,"1plus_kids_at_home"] == "True",]
+
+percent_of_single_parents_with_crash <- (length(which(single_vs_partnered_parents[,"Single_parent"] == "True" & single_vs_partnered_parents[,"Car_crash"] == "True"))*100)/length(which(single_vs_partnered_parents[,"Single_parent"] == "True"))
+
+percent_of_partnered_parents_with_crash <- (length(which(single_vs_partnered_parents[,"Single_parent"] == "False" & single_vs_partnered_parents[,"Car_crash"] == "True"))*100)/length(which(single_vs_partnered_parents[,"Single_parent"] == "False"))
+
+print("Percent of single parents with crash:")
+round(percent_of_single_parents_with_crash,digits=2)
+
+print("Percent of partnered parents with crash:")
+round(percent_of_partnered_parents_with_crash,digits=2)
+```
+
+Interesting! It actually appears that being a single parent is substantially correlated with a higher rate of car crashes vs. being a partnered parent (44% vs. 28%). Meanwhile, while partnered parents do have a somewhat higher rate of car crashes than non-parents (28% vs. 22%), the difference is not nearly as large.
+
+### Correlation of each level of CLM_FREQ, HOMEKIDS, and KIDSDRIV with TARGET_FLAG
+
+Let's now look at the correlation of each level of these variables with TARGET_FLAG.
+
+```{r clmfreq-homekids-kidsdriv-each-level-vs-target, echo=FALSE, eval=TRUE}
+for(var in c("CLM_FREQ","HOMEKIDS","KIDSDRIV"))
+{
+print(var)
+levels <- 0:5
+if(var == "KIDSDRIV"){levels <- 0:4}
+for(level in levels)
+{
+percent_in_crash <- (length(which(insurance[,var] == level & insurance[,"TARGET_FLAG"] == 1))*100)/length(which(insurance[,var] == level))
+print(paste0("Level = ",level,", % in crash = ",round(percent_in_crash)))
+}
+print("")
+}
+```
+
+We see some slight differences. But overall, it looks like transforming to binary based on 0 vs. >0 is the right call.
+
+### Correlation of factor variables with TARGET_FLAG
+
+Let's look at what the crash rate is for each education level, car type, and job type.
+
+```{r factor-vars-vs-target, echo=FALSE, eval=TRUE,fig.width=12,fig.height=8}
+crash_rates_per_level_factor_variables <- c()
+
+for(var in c("EDUCATION","JOB","CAR_TYPE"))
+{
+crash_rates_this_var <- c()
+for(level in unique(insurance[,var]))
+{
+	crash_rate <- (length(which(insurance[,var] == level & insurance[,"TARGET_FLAG"] == 1))*100)/length(which(insurance[,var] == level))
+	crash_rates_this_var <- c(crash_rates_this_var,crash_rate)
+}
+crash_rates_this_var <- data.frame(variable = var,
+	level = unique(insurance[,var]),
+	crash.rate = crash_rates_this_var,
+	stringsAsFactors=FALSE)
+crash_rates_per_level_factor_variables <- rbind(crash_rates_per_level_factor_variables,crash_rates_this_var)
+}
+
+crash_rates_per_level_factor_variables$level <- plyr::mapvalues(crash_rates_per_level_factor_variables$level,
+	from=c("<High School","z_High School","Bachelors","Masters","PhD"),
+	to=c("1 (<High school)","2 (High School)","3 (Bachelors)","4 (Masters)","5 (PhD)"))
+
+ggplot(crash_rates_per_level_factor_variables[crash_rates_per_level_factor_variables$variable != "JOB",],
+aes(level,crash.rate)) +
+geom_bar(stat="identity",col="black",fill="darkgrey") +
+xlab("Variable level") +
+ylab("Crash rate (%)") +
+theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+facet_wrap(~variable,scales="free_x",nrow=1) +
+geom_text(data=crash_rates_per_level_factor_variables[crash_rates_per_level_factor_variables$variable != "JOB",],aes(x=level,y=crash.rate + 1,label=round(crash.rate,digits=2)),vjust=0,size=3)
+
+job_crash_rates <- crash_rates_per_level_factor_variables[crash_rates_per_level_factor_variables$variable == "JOB",]
+job_crash_rates$level <- factor(job_crash_rates$level,levels=job_crash_rates$level[order(job_crash_rates$crash.rate)])
+
+ggplot(job_crash_rates,
+aes(level,crash.rate)) +
+geom_bar(stat="identity",col="black",fill="darkgrey") +
+xlab("Job type") +
+ylab("Crash rate (%)") +
+theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+geom_text(data=job_crash_rates,aes(x=level,y=crash.rate + 1,label=round(crash.rate,digits=2)),vjust=0,size=3)
+```
+
+We find that having a Bachelor's degree appears to be correlated with a substantial decrease in crash rate. But otherwise the finer details of education level are less important.
+
+In order of lowest to highest crash rates, we find the following car types: minivans, panel trucks and vans, SUVs, pickups, and sports cars. Although minivan is really the most dramatically different, so it might be reasonable here to collapse this variable into "minivan" vs. "other".
+
+We find that as expected, white collar jobs including doctor, manager, and lawyer have lower crash rates than blue collar jobs. We also find that students have very high crash rates, though this is likely more a function of students being younger than anything inherent to being a student itself.
+
+### Correlation of age/sex groups with TARGET_FLAG
+
+Let's look at the crash rates among males and females within age groups 16-19, 20-24, 25-64, 65-69, and 70+.
+
+Note, there are relatively few individuals in this data in the 16-19 and 70+ groups. So we should also look at the actual numbers as well as the percentages if we find any patterns that seem interesting.
+
+```{r age-and-sex-groups-vs-target-flag, echo=FALSE, eval=TRUE}
+age_and_sex_groups <- rep(NA,times=nrow(insurance))
+age_and_sex_groups[which(insurance[,"AGE"] < 20 & insurance[,"SEX"] == "M")] <- "16-19 Male"
+age_and_sex_groups[which(insurance[,"AGE"] < 20 & insurance[,"SEX"] == "z_F")] <- "16-19 Female"
+age_and_sex_groups[which(insurance[,"AGE"] >= 20 & insurance[,"AGE"] <= 24 & insurance[,"SEX"] == "M")] <- "20-24 Male"
+age_and_sex_groups[which(insurance[,"AGE"] >= 20 & insurance[,"AGE"] <= 24 & insurance[,"SEX"] == "z_F")] <- "20-24 Female"
+age_and_sex_groups[which(insurance[,"AGE"] >= 25 & insurance[,"AGE"] <= 64 & insurance[,"SEX"] == "M")] <- "25-64 Male"
+age_and_sex_groups[which(insurance[,"AGE"] >= 25 & insurance[,"AGE"] <= 64 & insurance[,"SEX"] == "z_F")] <- "25-64 Female"
+age_and_sex_groups[which(insurance[,"AGE"] >= 65 & insurance[,"AGE"] <= 69 & insurance[,"SEX"] == "M")] <- "65-69 Male"
+age_and_sex_groups[which(insurance[,"AGE"] >= 65 & insurance[,"AGE"] <= 69 & insurance[,"SEX"] == "z_F")] <- "65-69 Female"
+age_and_sex_groups[which(insurance[,"AGE"] >= 70 & insurance[,"SEX"] == "M")] <- "70+ Male"
+age_and_sex_groups[which(insurance[,"AGE"] >= 70 & insurance[,"SEX"] == "z_F")] <- "70+ Female"
+
+print("Table of age/sex groups:")
+table(age_and_sex_groups,useNA="ifany")
+
+crash_rate_per_age_sex_group <- data.frame(Age.sex.group = c("16-19 Male","16-19 Female","20-24 Male","20-24 Female","25-64 Male","25-64 Female","65-69 Male","65-69 Female","70+ Male","70+ Female"),
+	Crash.rate = rep(0,times=10),
+	stringsAsFactors=FALSE)
+
+for(age_sex_group in crash_rate_per_age_sex_group$Age.sex.group)
+{
+crash_rate <- (length(which(age_and_sex_groups == age_sex_group & insurance[,"TARGET_FLAG"] == 1))*100)/length(which(age_and_sex_groups == age_sex_group))
+crash_rate_per_age_sex_group[crash_rate_per_age_sex_group$Age.sex.group == age_sex_group,"Crash.rate"] <- crash_rate
+}
+
+crash_rate_per_age_sex_group$Crash.rate <- round(crash_rate_per_age_sex_group$Crash.rate,digits=2)
+
+crash_rate_per_age_sex_group
+```
+
+Among teenagers, we find that 3/7 male teens and 4/7 female teens had a crash. Among young adults (20-24), we find that 15/29 males and 19/29 females had a crash. Among younger seniors (65-69), we find that 6/36 males and 7/29 females had a crash. Among older seniors (70+), we get numbers of 2/9 males and 2/6 females.
+
+Given the small sample sizes we have for younger and older individuals and the relatively small sex differences, it looks like there is not enough evidence to say whether or not there is an age/sex interaction effect.
+
+In the large main age group of ages 25-64, we see the 2% difference we saw when looking at sex overall.
+
+As for age itself, we find that as we might expect, individuals under age 25 have higher crash rates. There is not substantial evidence of a difference for older drivers. So it seems logical to collapse age into a binary of "under 25" vs. "25+".
+
+### Correlation of motor vehicle points with TARGET_FLAG
+
+First, let's print the number of individuals with each level of motor vehicle points.
+
+```{r table-motor-vehicle-points, echo=FALSE, eval=TRUE}
+print("Number of records per number of motor vehicle points:")
+table(insurance[,"MVR_PTS"])
+```
+
+Now, get the crash rate for each.
+
+```{r crash-rate-per-level-motor-vehicle-points, echo=FALSE, eval=TRUE}
+for(level in unique(insurance[,"MVR_PTS"])[order(unique(insurance[,"MVR_PTS"]))])
+{
+crash_rate <- (length(which(insurance[,"MVR_PTS"] == level & insurance[,"TARGET_FLAG"] == 1))*100)/length(which(insurance[,"MVR_PTS"] == level))
+print(paste0("Number of points = ",level,", crash rate = ",round(crash_rate),"%"))
+}
+```
+
+We find that the crash rate increases with each additional motor vehicle point going from 0-9. There are very few records with 10+ motor vehicle points, but we find that all records with 10+ points have a higher crash rate vs. those with 9 points.
+
+Let's plot the crash rate for each point, plotting all records with 10+ points as 10.
+
+```{r crash-rate-per-level-motor-vehicle-points-plot, echo=FALSE, eval=TRUE}
+crash_rates_per_point <- c()
+
+for(level in 0:9)
+{
+crash_rate <- (length(which(insurance[,"MVR_PTS"] == level & insurance[,"TARGET_FLAG"] == 1))*100)/length(which(insurance[,"MVR_PTS"] == level))
+crash_rates_per_point <- c(crash_rates_per_point,crash_rate)
+}
+
+crash_rates_per_point <- c(crash_rates_per_point,(length(which(insurance[,"MVR_PTS"] >= 10 & insurance[,"TARGET_FLAG"] == 1))*100)/length(which(insurance[,"MVR_PTS"] >= 10)))
+
+plot(0:10,
+crash_rates_per_point,
+xlab="Number of motor vehicle record points (10 = 10+)",
+ylab="Crash rate (%)",
+type="o")
+```
+
+We find the biggest jump is going from 6 to 7 motor vehicle record points. The pattern is not perfectly linear, but it actually seems like taking this variable as a number (without factorizing at all) might be the best way to go.
+
+### Correlation of CAR_AGE, TIF, and YOJ with TARGET_FLAG
+
+For CAR_AGE, let's compare crash rates for individuals whose cars are a year or less old, 2-4 years old, and then 5-9, 10-14, 15-19, and 20+.
+
+For TIF, let's compare individuals who have been insured with the company for 1-2 years, 3 years, 4 years, and then 5-9, 10-14, and 15+.
+
+For YOJ, compare less than a year, 1-4, 5-9, 10-14, and 15+.
+
+```{r years-vars-vs-target-flag, echo=FALSE, eval=TRUE}
+car_age_groups <- rep(NA,times=nrow(insurance))
+car_age_groups[insurance[,"CAR_AGE"] == 0 | insurance[,"CAR_AGE"] == 1] <- "<2"
+car_age_groups[insurance[,"CAR_AGE"] >= 2 & insurance[,"CAR_AGE"] <= 4] <- "2-4"
+car_age_groups[insurance[,"CAR_AGE"] >= 5 & insurance[,"CAR_AGE"] <= 9] <- "5-9"
+car_age_groups[insurance[,"CAR_AGE"] >= 10 & insurance[,"CAR_AGE"] <= 14] <- "10-14"
+car_age_groups[insurance[,"CAR_AGE"] >= 15 & insurance[,"CAR_AGE"] <= 19] <- "15-19"
+car_age_groups[insurance[,"CAR_AGE"] >= 20] <- "20+"
+
+car_age_groups <- data.frame(Car.crash = insurance[,"TARGET_FLAG"],
+Car.age.group = car_age_groups,
+stringsAsFactors=FALSE)
+
+car_age_groups <- car_age_groups[which(is.na(car_age_groups[,2]) == FALSE),]
+
+tif_groups <- rep(NA,times=nrow(insurance))
+tif_groups[insurance[,"TIF"] == 1 | insurance[,"TIF"] == 2] <- "<3"
+tif_groups[insurance[,"TIF"] == 3] <- "3"
+tif_groups[insurance[,"TIF"] == 4] <- "4"
+tif_groups[insurance[,"TIF"] >= 5 & insurance[,"TIF"] <= 9] <- "5-9"
+tif_groups[insurance[,"TIF"] >= 10 & insurance[,"TIF"] <= 14] <- "10-14"
+tif_groups[insurance[,"TIF"] >= 15] <- "15+"
+
+tif_groups <- data.frame(Car.crash = insurance[,"TARGET_FLAG"],
+Tif.group = tif_groups,
+stringsAsFactors=FALSE)
+
+tif_groups <- tif_groups[which(is.na(tif_groups[,2]) == FALSE),]
+
+yoj_groups <- rep(NA,times=nrow(insurance))
+yoj_groups[insurance[,"YOJ"] == 0] <- "0"
+yoj_groups[insurance[,"YOJ"] >= 1 & insurance[,"YOJ"] <= 4] <- "1-4"
+yoj_groups[insurance[,"YOJ"] >= 5 & insurance[,"YOJ"] <= 9] <- "5-9"
+yoj_groups[insurance[,"YOJ"] >= 10 & insurance[,"YOJ"] <= 14] <- "10-14"
+yoj_groups[insurance[,"YOJ"] >= 15] <- "15+"
+
+yoj_groups <- data.frame(Car.crash = insurance[,"TARGET_FLAG"],
+Yoj.group = yoj_groups,
+stringsAsFactors=FALSE)
+
+yoj_groups <- yoj_groups[which(is.na(yoj_groups[,2]) == FALSE),]
+
+car_age_group_table <- table(car_age_groups[,1],car_age_groups[,2])
+car_age_group_table <- car_age_group_table[,c("<2","2-4","5-9","10-14","15-19","20+")]
+
+data.frame(Car.age = colnames(car_age_group_table),
+Crash.rate = round(car_age_group_table[2,]*100/(car_age_group_table[1,] + car_age_group_table[2,])),
+Total.records = colSums(car_age_group_table))
+
+tif_group_table <- table(tif_groups[,1],tif_groups[,2])
+tif_group_table <- tif_group_table[,c("<3","3","4","5-9","10-14","15+")]
+
+data.frame(TIF = colnames(tif_group_table),
+Crash.rate = round(tif_group_table[,2]*100/(tif_group_table[1,] + tif_group_table[2,])),
+Total.records = colSums(tif_group_table))
+
+yoj_group_table <- table(yoj_groups[,1],yoj_groups[,2])
+yoj_group_table <- yoj_group_table[,c("0","1-4","5-9","10-14","15+")]
+
+data.frame(YOJ = colnames(yoj_group_table),
+Crash.rate = round(yoj_group_table[2,]*100/(yoj_group_table[1,] + yoj_group_table[2,])),
+Total.records = colSums(yoj_group_table))
+```
+
+We find that older cars tend to be associated with somewhat lower crash rates. However, I suspect this is probably due to confounding with other variables. Also, the effect is not very strong. I think it would be reasonable to exclude car age from the binary logistic regression step, though we will likely find it more useful for the step where we predict claim amount.
+
+Strangely, we find that individuals who have been customers for a very long time (15+ years) actually have a substantially higher crash rate. There is no reasonable explanation I can think of for this correlation. I'm going to assume that this is due to confounding with other variables as well, or due to chance.
+
+Finally, we find that individuals with at least one year on the job have a somewhat lower crash rate. This makes sense. It looks like conversion to 0 vs. 1+ would be reasonable for this variable.
+
+### Correlation of INCOME, TRAVTIME, and BLUEBOOK with TARGET_FLAG
+
+Finally, let's look at the correlation of the following variables with whether or not the individual was in a crash.
+
+1. INCOME
+2. TRAVTIME
+3. BLUEBOOK
+
+First, I think we need to take a closer look again at the distribution of INCOME and BLUEBOOK.
+
+This time, do not log-transform.
+
+```{r redo-hist-income-and-bluebook, echo=FALSE, eval=TRUE}
+par(mfrow=c(1,2))
+
+hist(insurance[insurance$INCOME >= 1000,"INCOME"],
+xlab="Values",
+ylab="Number of records",
+main="INCOME >= 1000",
+labels=TRUE)
+
+hist(insurance$BLUEBOOK,
+xlab="Values",
+ylab="Number of records",
+main="BLUEBOOK",
+labels=TRUE)
+
+hist(insurance[insurance$INCOME >= 1000 & insurance$INCOME < 20000,"INCOME"],
+xlab="Values",
+ylab="Number of records",
+main="INCOME >= 1000 & < 20,000",
+labels=TRUE)
+
+hist(insurance[insurance$BLUEBOOK < 10000,"BLUEBOOK"],
+xlab="Values",
+ylab="Number of records",
+main="BLUEBOOK < 10,000",
+labels=TRUE)
+```
+
+What are the crash rates for individuals with INCOME = 0 vs. > 0?
+
+```{r crash-rates-no-vs-yes-income, echo=FALSE, eval=TRUE}
+crash_rate_no_income <- (length(which(insurance$INCOME == 0 & insurance$TARGET_FLAG == 1))*100)/length(which(insurance$INCOME == 0))
+crash_rate_with_income <- (length(which(insurance$INCOME > 0 & insurance$TARGET_FLAG == 1))*100)/length(which(insurance$INCOME > 0))
+
+print("Crash rate when INCOME = 0:")
+round(crash_rate_no_income,digits=2)
+print("Crash rate when INCOME > 0:")
+round(crash_rate_with_income,digits=2)
+```
+
+Make boxplots with log10 of income and car value vs. whether or not in a crash.
+
+```{r boxplots-income-and-bluebook-vs-target, echo=FALSE, eval=TRUE}
+par(mfrow=c(1,2))
+
+boxplot(log10(INCOME) ~ factor(TARGET_FLAG),data=insurance[insurance$INCOME > 0,],xlab="Car crash (1 = Yes)",ylab="log10(INCOME)",main="INCOME > 0")
+
+boxplot(log10(BLUEBOOK) ~ factor(TARGET_FLAG),data=insurance,xlab="Car crash (1 = Yes)",ylab="log10(BLUEBOOK)",main="BLUEBOOK")
+
+par(mfrow=c(1,2))
+
+boxplot(log10(INCOME) ~ factor(TARGET_FLAG),data=insurance[insurance$INCOME >= 10000,],xlab="Car crash (1 = Yes)",ylab="log10(INCOME)",main="INCOME >= 10000")
+
+boxplot(log10(BLUEBOOK) ~ factor(TARGET_FLAG),data=insurance[insurance$BLUEBOOK >= 5000,],xlab="Car crash (1 = Yes)",ylab="log10(BLUEBOOK)",main="BLUEBOOK >= 5000")
+```
+
+It seems that having a lower income and a cheaper car are both associated with higher crash rates. Though I imagine we will find that these two variables are also highly correlated.
+
+It also seems that log10-transformation, including 0's, and then treating as a continous numeric variable is probably the way to go here.
+
+What about TRAVTIME?
+
+```{r boxplot-travtime-vs-target-flag, echo=FALSE, eval=TRUE}
+par(mfrow=c(1,2))
+boxplot(TRAVTIME ~ factor(TARGET_FLAG),data=insurance,xlab="Car crash (1 = Yes)",ylab="TRAVTIME",main="All records")
+
+boxplot(TRAVTIME ~ factor(TARGET_FLAG),data=insurance[insurance$TRAVTIME < 60,],xlab="Car crash (1 = Yes)",ylab="TRAVTIME",main="TRAVTIME < 60")
+```
+
+Travel time appears very slightly positively correlated with crash rate, but the difference is very small. It seems reasonable to exclude this variable from the binary logistic regression.
+
+### Summary of transformations to run and variables to consider for binary logistic regression
+
+In summary, we will run the following transformations and variable exclusions for the binary logistic regression based on this exploration.
+
+1. Instead of treating HOME_VAL as numeric, we will create a binary variable "Homeowner" that is true when HOME_VAL is non-NA and >0.
+2. Create binary variable Claim_in_5_yrs that is true when an individual has had at least one claim in the past 5 years. Use this instead of CLM_FREQ.
+3. Create binary variable 1plus_driving_children that is true when an individual has at least one teenager on their insurance. Use this instead of KIDSDRIV.
+4. Combine PARENT1 and HOMEKIDS into a binary variable "Single.parent" that is true for single parents and false for partnered parents and non-parents.
+5. Convert CAR_TYPE to a binary of minivan vs. other.
+6. Convert EDUCATION to a binary of bachelors or higher vs. high school or less.
+6. Convert JOB to a three-level variable of "blue collar","student", or "other". Will likely find that student is collinear with other variables, but this will be a good start.
+7. Convert YOJ to a binary variable of 0 vs. 1+.
+8. Convert MVR_PTS > 10 to 10.
+9. Convert AGE to a binary variable "Young.age" that is true when AGE < 25.
+10. Log10-transform income and car value (BLUEBOOK).
+11. Exclude the following variables:
+	a. Whether or not the car is red (REDCAR)
+	b. Gender (SEX)
+	c. Age of car (CAR_AGE)
+	d. Time insured (TIF)
+	e. Commute time (TRAVTIME)
+
+This will leave us with the following binary predictor variables.
+
+1. Commercial vehicle
+2. Married
+3. Revoked
+4. Single.parent
+5. Urban vs. rural
+6. Homeowner
+7. Claim_in_5_yrs
+8. 1plus_driving_children
+9. Minivan vs. other
+10. Bachelor's or higher vs. high school or less
+11. YOJ (years on job) 0 vs. 1+
+12. Young.age (age < 25 vs. 25+)
+
+In addition, will have one factor with more than 2 levels (JOB, which will have three levels).
+
+Then MVR_PTS, log10(income), and log10(car value) will be the three numeric variables.
+
+## Correlations within predictor variables for TARGET_FLAG
+
+After the transformations listed above, we should explore the correlations within predictor variables for TARGET_FLAG.
+
+### Correlations within binary and three-level predictor variables for TARGET_FLAG
+
+For the 13 binary variables, let's express as dummy variables so we can calculate correlation coefficients. Then, plot these correlations in a heatmap.
+
+For JOB, let's look first at the correlation only within non-student records, then only within non-blue-collar records.
+
+```{r correlation-within-binary-predictors-target-flag, echo=FALSE, eval=TRUE,message=FALSE,warning=FALSE}
+binary_variables <- num_unique_values_per_variable$Variable[num_unique_values_per_variable$Num.uniques == 2]
+
+binary_variables_data <- insurance[,c(binary_variables,"HOME_VAL","CLM_FREQ","HOMEKIDS","KIDSDRIV")]
+
+#Already included: Commercial vehicle, Married, Revoked, Urban vs. rural, Homeowner, Claim_in_5_yrs, 1plus_driving_children
+#Need to add: YOJ, CAR_TYPE, AGE, and EDUCATION as binaries
+#Plus remove HOMEKIDS.
+
+colnames(binary_variables_data) <- plyr::mapvalues(colnames(binary_variables_data),
+        from=c("CAR_USE","MSTATUS","PARENT1","RED_CAR","REVOKED","SEX","TARGET_FLAG","URBANICITY","HOME_VAL","CLM_FREQ","HOMEKIDS","KIDSDRIV"),
+        to=c("Commercial_vehicle","Married","Single_parent","Red_car","Revoked","Sex_male","Car_crash","Urban_not_rural","Homeowner","Claim_in_5_yrs","1plus_kids_at_home","1plus_driving_children"))
+
+binary_variables_data[which(is.na(binary_variables_data[,"Homeowner"]) == TRUE),"Homeowner"]  <- 0
+
+binary_variables_data[,"Commercial_vehicle"] <- ifelse(binary_variables_data[,"Commercial_vehicle"] == "Commercial",1,0)
+binary_variables_data[,"Married"] <- ifelse(binary_variables_data[,"Married"] == "Yes",1,0)
+binary_variables_data[,"Single_parent"] <- ifelse(binary_variables_data[,"Single_parent"] == "Yes",1,0)
+binary_variables_data[,"Red_car"] <- ifelse(binary_variables_data[,"Red_car"] == "yes",1,0)
+binary_variables_data[,"Revoked"] <- ifelse(binary_variables_data[,"Revoked"] == "Yes",1,0)
+binary_variables_data[,"Sex_male"] <- ifelse(binary_variables_data[,"Sex_male"] == "M",1,0)
+binary_variables_data[,"Car_crash"] <- ifelse(binary_variables_data[,"Car_crash"] == 1,1,0)
+binary_variables_data[,"Urban_not_rural"] <- ifelse(binary_variables_data[,"Urban_not_rural"] == "Highly Urban/ Urban",1,0)
+
+for(var in c("Homeowner","Claim_in_5_yrs","1plus_kids_at_home","1plus_driving_children"))
+{
+binary_variables_data[,var] <- ifelse(binary_variables_data[,var] > 0,1,0)
+}
+
+binary_variables_data <- binary_variables_data[,setdiff(colnames(binary_variables_data),"1plus_kids_at_home")]
+
+binary_variables_data <- cbind(binary_variables_data,insurance[,c("YOJ","CAR_TYPE","AGE","EDUCATION")])
+
+colnames(binary_variables_data) <- plyr::mapvalues(colnames(binary_variables_data),
+	from=c("YOJ","CAR_TYPE","AGE","EDUCATION"),
+	to=c("1plus_years_on_job","Minivan","Young_age","College_education"))
+
+binary_variables_data[which(binary_variables_data[,"1plus_years_on_job"] >= 1 & is.na(binary_variables_data[,"1plus_years_on_job"]) == FALSE),"1plus_years_on_job"] <- 1
+binary_variables_data[which(binary_variables_data[,"1plus_years_on_job"] == 0 & is.na(binary_variables_data[,"1plus_years_on_job"]) == FALSE),"1plus_years_on_job"] <- 0
+
+binary_variables_data$Minivan <- ifelse(binary_variables_data$Minivan == "Minivan",1,0)
+
+binary_variables_data[which(binary_variables_data[,"Young_age"] < 25 & is.na(binary_variables_data[,"Young_age"]) == FALSE),"Young_age"] <- 1
+binary_variables_data[which(binary_variables_data[,"Young_age"] >= 25 & is.na(binary_variables_data[,"Young_age"]) == FALSE),"Young_age"] <- 0
+
+binary_variables_data[,"College_education"] <- ifelse(binary_variables_data[,"College_education"] == "Bachelors" | binary_variables_data[,"College_education"] == "Masters" | binary_variables_data[,"College_education"] == "PhD",1,0)
+
+binary_variables_data <- binary_variables_data[,setdiff(colnames(binary_variables_data),c("Car_crash","Red_car","Sex_male"))]
+
+correlation_variables <- abs(cor(binary_variables_data,use="pairwise.complete.obs"))
+
+for(i in 1:(nrow(correlation_variables) - 1))
+{
+correlation_variables[i,seq(from=i,to=ncol(correlation_variables),by=1)] <- NA
+}
+
+correlation_variables[ncol(binary_variables_data),ncol(binary_variables_data)] <- NA
+
+colnames(correlation_variables) <- plyr::mapvalues(colnames(correlation_variables),
+	from=c("1plus_driving_children","1plus_years_on_job"),
+	to=c("Driving_children_1plus","Years_on_job_1plus"))
+
+rownames(correlation_variables) <- plyr::mapvalues(rownames(correlation_variables),
+	from=c("1plus_driving_children","1plus_years_on_job"),
+	to=c("Driving_children_1plus","Years_on_job_1plus"))
+
+colnames(binary_variables_data) <- plyr::mapvalues(colnames(binary_variables_data),
+	from=c("1plus_driving_children","1plus_years_on_job"),
+	to=c("Driving_children_1plus","Years_on_job_1plus"))
+
+correlation_variables <- gather(data.frame(correlation_variables),"y","correlation")
+
+correlation_variables <- data.frame(x = rep(unique(correlation_variables$y),times=length(unique(correlation_variables$y))),correlation_variables)
+
+correlation_variables$x <- factor(correlation_variables$x,levels=colnames(binary_variables_data))
+correlation_variables$y <- factor(correlation_variables$y,levels=colnames(binary_variables_data))
+
+correlation_variables %>%
+ggplot(.,
+aes(x = x,y = y)) +
+geom_tile(aes(fill = correlation)) +
+theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+scale_fill_gradient2(low = "blue",mid = "white",high = "red",na.value = "grey50") +
+geom_text(aes(label = round(correlation, 2)),size=2) +
+ggtitle("Magnitude only shown (abs value if negative)")
+
+table(ifelse(binary_variables_data$Married == 1,"Married","Not married"),
+ifelse(binary_variables_data$Homeowner == 1,"Homeowner","Not homeowner"))
+
+table(ifelse(binary_variables_data$Married == 1,"Married","Not married"),
+ifelse(binary_variables_data$Single_parent == 1,"Single parent","Not single parent"))
+
+table(ifelse(binary_variables_data$Urban_not_rural == 1,"Urban","Rural"),
+ifelse(binary_variables_data$College_education == 1,"College-educated","High school or less"))
+
+table(ifelse(binary_variables_data$Commercial_vehicle == 1,"Commercial vehicle","Private vehicle"),
+ifelse(binary_variables_data$Minivan == 1,"Minivan","Other"))
+```
+
+By definition, all single parents are unmarried, so that is why we see the strong magnitude of correlation between marital status and single parent.
+
+We also find that married people are much more likely to own homes, which intuitively makes sense.
+
+We find that single parents are less likely to own homes, which also intuitively makes sense.
+
+We also see some other correlations. E.g. urban individuals are more likely to have at least a college education. Individuals who drive a minivan are less likely to use their vehicle for commercial use.
+
+We need to resolve the high level of collinearity between marital status, single parent status, and homeowner status.
+
+One thing to check - crash rates for married vs. unmarried individuals who are not single parents.
+
+```{r crash-rate-married-vs-unmarried-not-single-parents, echo=FALSE, eval=TRUE}
+crash_rate_married_not_single_parents <- (length(which(insurance[,"MSTATUS"] == "Yes" & insurance[,"PARENT1"] == "No" & insurance[,"TARGET_FLAG"] == 1))*100)/length(which(insurance[,"MSTATUS"] == "Yes" & insurance[,"PARENT1"] == "No"))
+
+crash_rate_unmarried_not_single_parents <- (length(which(insurance[,"MSTATUS"] != "Yes" & insurance[,"PARENT1"] == "No" & insurance[,"TARGET_FLAG"] == 1))*100)/length(which(insurance[,"MSTATUS"] != "Yes" & insurance[,"PARENT1"] == "No"))
+
+crash_rate_single_parents <- (length(which(insurance[,"PARENT1"] == "Yes" & insurance[,"TARGET_FLAG"] == 1))*100)/length(which(insurance[,"PARENT1"] == "Yes"))
+
+print("Crash rate for married, not single parents:")
+round(crash_rate_married_not_single_parents,digits=2)
+print("Crash rate for unmarried, not single parents:")
+round(crash_rate_unmarried_not_single_parents,digits=2)
+
+print("Crash rate for single parents:")
+round(crash_rate_single_parents,digits=2)
+```
+
+It looks like it could be reasonable to combine these two variables into one variable with three levels: married/not single parent, unmarried/not single parent, and single parent.
+
+Married individuals have the lowest crash risk regardless of child status. Then unmarried individuals who are not single parents, then single parents have the highest by far.
+
+Let's see how each of these three levels correlate with homeownership, and look at possible interactions there.
+
+```{r married-vs-unmarried-not-single-parent-and-single-parent-vs-homeownership, echo=FALSE, eval=TRUE}
+married_and_unmarried_non_single_parent_or_single_parent <- rep(0,times=nrow(insurance))
+married_and_unmarried_non_single_parent_or_single_parent[which(insurance[,"MSTATUS"] != "Yes" & insurance[,"PARENT1"] == "No")] <- 1
+married_and_unmarried_non_single_parent_or_single_parent[which(insurance[,"MSTATUS"] != "Yes" & insurance[,"PARENT1"] == "Yes")] <- 2
+
+homeownership <- ifelse(insurance[,"HOME_VAL"] > 0 & is.na(insurance[,"HOME_VAL"]) == FALSE,1,0)
+
+homeownership_rate_among_married_non_single_parents <- (length(which(married_and_unmarried_non_single_parent_or_single_parent == 0 & homeownership == 1))*100)/length(which(married_and_unmarried_non_single_parent_or_single_parent == 0))
+
+homeownership_rate_among_unmarried_non_single_parents <- (length(which(married_and_unmarried_non_single_parent_or_single_parent == 1 & homeownership == 1))*100)/length(which(married_and_unmarried_non_single_parent_or_single_parent == 1))
+
+homeownership_rate_among_single_parents <- (length(which(married_and_unmarried_non_single_parent_or_single_parent == 2 & homeownership == 1))*100)/length(which(married_and_unmarried_non_single_parent_or_single_parent == 2))
+
+print("Homeownership rate among married indivduals:")
+round(homeownership_rate_among_married_non_single_parents,digits=2)
+print("Homeownership rate among unmarried individuals, not single parents:")
+round(homeownership_rate_among_unmarried_non_single_parents,digits=2)
+print("Homeownership rate among single parents:")
+round(homeownership_rate_among_single_parents,digits=2)
+```
+
+How do crash rates differ between unmarried individuals (both single parents and not) who own their homes as compared to those who don't?
+
+```{r crash-rate-unmarried-homeowners-vs-not, echo=FALSE, eval=TRUE}
+crash_rate_unmarried_not_single_parent_renters <- (length(which(married_and_unmarried_non_single_parent_or_single_parent == 1 & homeownership == 0 & insurance[,"TARGET_FLAG"] == 1))*100)/length(which(married_and_unmarried_non_single_parent_or_single_parent == 1 & homeownership == 0))
+
+crash_rate_unmarried_not_single_parent_owners <- (length(which(married_and_unmarried_non_single_parent_or_single_parent == 1 & homeownership == 1 & insurance[,"TARGET_FLAG"] == 1))*100)/length(which(married_and_unmarried_non_single_parent_or_single_parent == 1 & homeownership == 1))
+
+crash_rate_single_parent_renters <- (length(which(married_and_unmarried_non_single_parent_or_single_parent == 2 & homeownership == 0 & insurance[,"TARGET_FLAG"] == 1))*100)/length(which(married_and_unmarried_non_single_parent_or_single_parent == 2 & homeownership == 0))
+
+crash_rate_single_parent_owners <- (length(which(married_and_unmarried_non_single_parent_or_single_parent == 2 & homeownership == 1 & insurance[,"TARGET_FLAG"] == 1))*100)/length(which(married_and_unmarried_non_single_parent_or_single_parent == 2 & homeownership == 1))
+
+print("Crash rate for unmarried not single parent renters:")
+round(crash_rate_unmarried_not_single_parent_renters,digits=2)
+print("Crash rate for unmarried not single parent owners:")
+round(crash_rate_unmarried_not_single_parent_owners,digits=2)
+print("Crash rate for single parent renters:")
+round(crash_rate_single_parent_renters,digits=2)
+print("Crash rate for single parent owners:")
+round(crash_rate_single_parent_owners,digits=2)
+```
+
+And what about between married renters and owners?
+
+```{r crash-rates-married-homeowners-vs-not, echo=FALSE, eval=TRUE}
+crash_rate_married_renters <- (length(which(insurance[,"MSTATUS"] == "Yes" & homeownership == 0 & insurance[,"TARGET_FLAG"] == 1))*100)/length(which(insurance[,"MSTATUS"] == "Yes" & homeownership == 0))
+
+crash_rate_married_homeowners <- (length(which(insurance[,"MSTATUS"] == "Yes" & homeownership == 1 & insurance[,"TARGET_FLAG"] == 1))*100)/length(which(insurance[,"MSTATUS"] == "Yes" & homeownership == 1))
+
+print("Crash rate for married renters:")
+round(crash_rate_married_renters,digits=2)
+
+print("Crash rate for married homeowners:")
+round(crash_rate_married_homeowners,digits=2)
+```
+
+It seems like variables of marital status, homeownership, and single parent status could be combined into a single variable with 6 levels. Let's call this the "white picket fence" index. Married individuals who own homes will have 6 points for this index. Then subtract 3 points from this index if this individual is a single parent, subtract 2 points if the individual does not own a home, and 1 point if the individual is unmarried.
+
+This leaves us with the following levels:
+
+1. 6 points - married homeowner
+2. 5 points - unmarried (not single parent) homeowners
+3. 4 points - married renters
+4. 3 points - unmarried (not single parent) renters
+5. 2 points - single parent homeowners
+6. 1 point - single parent renters
+
+Let's plot this out.
+
+```{r plot-white-picket-fence-vs-crash-rate, echo=FALSE, eval=TRUE}
+plot(1:6,
+c(48.7,34.77,30.96,28.39,24.11,20.51),
+ylab="Crash rate (%)",
+xlab="White picket fence index",
+type="o")
+```
+
+We find the index look somewhat linearly correlated with crash rate. Except, the crash rate for single parent renters is too high, throwing off the fit.
+
+What if we set the max of the index at 8? Keep everything else the same, except subtract an additional 2 points if the individual is both a single parent and a renter.
+
+```{r plot-modified-white-picket-fence-vs-crash-rate, echo=FALSE, eval=TRUE}
+plot(c(0,4:8),
+c(48.7,34.77,30.96,28.39,24.11,20.51),
+ylab="Crash rate (%)",
+xlab="White picket fence index (modified)",
+type="o")
+
+abline(lm(c(48.7,34.77,30.96,28.39,24.11,20.51) ~ c(0,4:8)),lty=2)
+```
+
+The linear trend is now very close to a straight line! 
+
+Now, let's look at correlations with occupation (blue collar vs. student vs. other).
+
+First quick thing to check is the correlation of being under 25 with being a student.
+
+```{r age-vs-student, echo=FALSE, eval=TRUE}
+num_students <- length(which(insurance$JOB == "Student"))
+num_students_under_25 <- length(which(insurance$JOB == "Student" & is.na(insurance$AGE) == FALSE & insurance$AGE < 25))
+
+print("Percent of students who are under 25:")
+round((num_students_under_25*100)/num_students,digits=2)
+
+num_non_students <- nrow(insurance) - num_students
+num_non_students_under_25 <- length(which(insurance$JOB != "Student" & is.na(insurance$AGE) == FALSE & insurance$AGE < 25))
+
+print("Percent of non-students who are under 25:")
+round((num_non_students_under_25*100)/num_non_students,digits=2)
+```
+
+While the proportion of individuals under 25 is higher among students, most students are still age 25+.
+
+What about the correlation of occupation with the "white picket fence index"?
+
+```{r white-picket-index-vs-occupation, echo=FALSE, eval=TRUE}
+single_parent_status <- ifelse(insurance[,"PARENT1"] == "Yes",1,0)
+marital_status <- ifelse(insurance[,"MSTATUS"] == "Yes",1,0)
+
+white_picket_fence_index <- rep(8,times=nrow(insurance))
+
+points_to_subtract <- rep(0,times=nrow(insurance))
+
+points_to_subtract <- ifelse(single_parent_status == 1,points_to_subtract + 3,points_to_subtract)
+points_to_subtract <- ifelse(homeownership == 0,points_to_subtract + 2,points_to_subtract)
+points_to_subtract <- ifelse(marital_status == 0,points_to_subtract + 1,points_to_subtract)
+points_to_subtract <- ifelse(single_parent_status == 1 & homeownership == 0,points_to_subtract + 2,points_to_subtract)
+
+white_picket_fence_index = white_picket_fence_index - points_to_subtract
+
+#Just checking that index calculated correctly. Will comment this out at the end.
+
+#crash_rates_vs_white_picket_fence_index <- c()
+
+#for(index in c(0,4:8))
+#{
+#crash_rate <- (length(which(white_picket_fence_index == index & insurance[,"TARGET_FLAG"] == 1))*100)/length(which(white_picket_fence_index == index))
+#crash_rates_vs_white_picket_fence_index <- c(crash_rates_vs_white_picket_fence_index,crash_rate)
+#}
+
+#plot(c(0,4:8),crash_rates_vs_white_picket_fence_index,xlab="White picket fence index",ylab="Crash rate (%)",type="o")
+#abline(lm(crash_rates_vs_white_picket_fence_index ~ c(0,4:8)),lty=2)
+
+occupation_three_level <- rep("Other",times=nrow(insurance))
+occupation_three_level[insurance$JOB == "z_Blue Collar"] <- "Blue collar"
+occupation_three_level[insurance$JOB == "Student"] <- "Student"
+
+print("Table occupations vs. white picket fence index:")
+table_occupations_vs_white_picket_fence_index <- table(occupation_three_level,white_picket_fence_index)
+
+table_occupations_vs_white_picket_fence_index
+
+print("As proportions:")
+
+for(i in 1:3)
+{
+table_occupations_vs_white_picket_fence_index[i,] <- table_occupations_vs_white_picket_fence_index[i,]/sum(table_occupations_vs_white_picket_fence_index[i,])
+}
+
+round(table_occupations_vs_white_picket_fence_index,digits=3)
+
+print("Homeownership rates among students:")
+round((length(which(occupation_three_level == "Student" & homeownership == 1))*100)/length(which(occupation_three_level == "Student")),digits=2)
+```
+
+We find that students are substantially less likely to own homes, which makes sense. It seems likely that students have a higher crash rate due to confound with other variables, including perhaps being less financially stable.
+
+Interestingly blue collar workers have a higher crash rate despite a relatively similar rate of different "white picket fence index" levels, including a very similar rate of being married homeowners. 
+
+Another possible correlation is of commercial vehicle use vs. job type. Let's check this.
+
+```{r commercial-use-vs-blue-collar, echo=FALSE, eval=TRUE}
+blue_collar_vs_not <- ifelse(insurance$JOB == "z_Blue Collar","Blue collar","Student or other job")
+
+table(insurance[,"CAR_USE"],blue_collar_vs_not)
+```
+
+Looks like these variables are extremely confounded. On its own, working a blue collar job is probably not especially correlated with crash risk if the individual does not use their car for work. I think we should remove this variable from the data.
+
+### Summary of additional transformations and variable exclusions based on correlations within binary/three-level predictors
+
+We have concluded that variables Married, Single.parent, and Homeowner are to be combined into one 6-level dummy variable called "white picket fence index".
+
+We also decided to exclude occupation from the binary logistic regression.
+
+Thus we are left with the following binary variables.
+
+1. Commercial vehicle
+2. Revoked
+3. Urban vs. rural
+4. Claim_in_5_yrs
+5. 1plus_driving_children
+6. Minivan vs. other
+7. Bachelor’s or higher vs. high school or less
+8. YOJ (years on job) 0 vs. 1+
+9. Young.age (age < 25 vs. 25+)
+
+We add a new dummy variable white picket fence index, which we will treat as a numeric variable.
+
+We still need to explore correlations within our now 4 numeric variables (white picket fence index, MVR_PTS, log10(income), and log10(car value)), as well as beteween these variables and the binary variables.
+
+### Correlations within numeric predictor variables of TARGET_FLAG
+
+Let's make a simple correlation scatterplot of log10(income) vs. log10(car value).
+
+```{r correlation-income-vs-car-value, echo=FALSE, eval=TRUE,message=FALSE,warning=FALSE}
+ggplot(insurance,
+aes(log10(INCOME + 1),log10(BLUEBOOK))) +
+geom_point(alpha=1/10) 
+
+ggplot(insurance[insurance$INCOME >= 1000,],
+aes(log10(INCOME + 1),log10(BLUEBOOK))) +
+geom_point(alpha=1/10) +
+ggtitle("Showing only records where income >= 1000")
+```
+
+Looks like those with no income may sometimes still drive cars with fairly high value, which makes sense. They may have bought the car when they were employed. It's also unclear how spouse's incomes are counted here, but maybe some of these individuals could still receive income from their spouses. Not to mention retirees.
+
+Other than that we see some correlation, but actually a lot less than expected. 
+
+What about each of these variables vs. MVR_PTS?
+
+Even though MVR_PTS is numeric, for visualization we will treat it as a factor here.
+
+```{r correlation-income-and-car-value-vs-record-pts, echo=FALSE, eval=TRUE,message=FALSE,warning=FALSE}
+motor_vehicle_record_points <- insurance[,"MVR_PTS"]
+motor_vehicle_record_points[motor_vehicle_record_points > 10] <- 10
+
+boxplot(log10(insurance$INCOME + 1) ~ factor(motor_vehicle_record_points),
+xlab="Motor vehicle record points",
+ylab="log10(income + 1)")
+
+boxplot(log10(insurance$BLUEBOOK) ~ factor(motor_vehicle_record_points),
+xlab="Motor vehicle record points",
+ylab="log10(car value)")
+
+boxplot(log10(insurance$INCOME + 1)[insurance$INCOME >= 1e4] ~ factor(motor_vehicle_record_points[insurance$INCOME >= 1e4]),
+xlab="Motor vehicle record points",
+ylab="log10(income + 1)",
+main="Records with income >= $10,000 only")
+```
+
+Note that there are very few records with 9+ motor vehicle points. It appears that individuals with 9+ motor vehicle points have lower income, but it is a bit hard to tell what is going on just from these plots.
+
+Overall, I think we are OK including all three of these variables together, as the correlations don't seem super strong.
+
+Finally, check these variables vs. "white picket fence index".
+
+```{r income-and-car-value-vs-white-picket-fence-index, echo=FALSE, eval=TRUE,message=FALSE,warning=FALSE}
+boxplot(log10(insurance$INCOME + 1) ~ factor(white_picket_fence_index),
+xlab="White picket fence index",
+ylab="log10(income + 1)")
+
+boxplot(log10(insurance$BLUEBOOK) ~ factor(white_picket_fence_index),
+xlab="White picket fence index",
+ylab="log10(car value)")
+```
+
+It looks like married renters may have a somewhat lower income, which makes sense if their spouse's income is not being counted as their own.
+
+Otherwise, income and white picket fence index appear quite correlated.
+
+What is the correlation between motor vehicle record points and white picket fence index?
+
+```{r mvr-pts-vs-white-picket-fence-index, echo=FALSE, eval=TRUE,message=FALSE,warning=FALSE}
+#boxplot(motor_vehicle_record_points ~ factor(white_picket_fence_index),
+#xlab="White picket fence index",
+#ylab="Motor vehicle record points")
+
+#stripchart(motor_vehicle_record_points ~ factor(white_picket_fence_index),
+#ylab="White picket fence index",
+#xlab="Motor vehicle record points",
+#method="jitter",
+#pch=21)
+
+print("Correlation coefficient motor vehicle record points vs. white picket fence index:")
+round(cor(motor_vehicle_record_points,white_picket_fence_index),digits=2)
+```
+
+Not super correlated.
+
+Looking back, I am wondering if we should adjust motor vehicle record points to better approximate a linear fit. Similar to how we had to subtract extra points for when individuals were both single parents and renters, maybe we should add extra points when individuals have 7 or more points.
+
+```{r test-add-to-mvr-pts-when-7plus, echo=FALSE, eval=TRUE}
+#motor_vehicle_record_points_add_when_7plus <- ifelse(motor_vehicle_record_points >= 7,motor_vehicle_record_points + 4,motor_vehicle_record_points)
+
+#crash_rates_per_modified_motor_vehicle_record_points <- c()
+
+#for(pts in unique(motor_vehicle_record_points_add_when_7plus)[order(unique(motor_vehicle_record_points_add_when_7plus))])
+#{
+#crash_rate <- (length(which(motor_vehicle_record_points_add_when_7plus == pts & insurance[,"TARGET_FLAG"] == 1))*100)/length(which(motor_vehicle_record_points_add_when_7plus == pts))
+#crash_rates_per_modified_motor_vehicle_record_points <- c(crash_rates_per_modified_motor_vehicle_record_points,crash_rate)
+#}
+
+#plot(unique(motor_vehicle_record_points_add_when_7plus)[order(unique(motor_vehicle_record_points_add_when_7plus))],
+#crash_rates_per_modified_motor_vehicle_record_points,
+#type="o",
+#xlab="Motor vehicle record points (modified)",
+#ylab="Crash rate (%)",
+#main="Add 4 when points >= 7")
+
+#abline(lm(crash_rates_per_modified_motor_vehicle_record_points ~ unique(motor_vehicle_record_points_add_when_7plus)[order(unique(motor_vehicle_record_points_add_when_7plus))]),lty=2)
+
+crash_rates_per_point_level <- c()
+
+for(pts in 0:10)
+{
+crash_rate <- (length(which(motor_vehicle_record_points == pts & insurance[,"TARGET_FLAG"] == 1))*100)/length(which(motor_vehicle_record_points == pts))
+crash_rates_per_point_level <- c(crash_rates_per_point_level,crash_rate)
+}
+
+par(mfrow=c(2,3))
+
+for(i in 0:5)
+{
+plot(c(0:6,(7:10 + i)),
+crash_rates_per_point_level,
+type="o",
+xlab="Motor vehicle record points + n",
+ylab="Crash rate (%)",
+main=paste0("n = ",i))
+
+abline(lm(crash_rates_per_point_level ~ c(0:6,(7:10 + i))),lty=2)
+}
+```
+
+Just looking by eye, it looks like it makes the most sense to add either 2 or 3 when points >= 7.
+
+Let's compare the fits.
+
+```{r lm-mvr-pts-plus-2-vs-3, echo=FALSE, eval=TRUE}
+print("n = 2 linear model summary:")
+summary(lm(crash_rates_per_point_level ~ c(0:6,9:12)))
+print("n = 3 linear model summary:")
+summary(lm(crash_rates_per_point_level ~ c(0:6,10:13)))
+
+model_n2 <- lm(crash_rates_per_point_level ~ c(0:6,9:12))
+model_n3 <- lm(crash_rates_per_point_level ~ c(0:6,10:13))
+
+print("Actual crash rates at 6 and 7 points:")
+crash_rates_per_point_level[7:8]
+
+print("Predicted for n=2:")
+(5.0744 * c(6,9)) + 15.7361
+print("Predicted for n=3:")
+(4.5850 * c(6,10)) + 16.8716
+```
+
+Let's add 3 when motor vehicle record points >= 7.
+
+### Conclusions about how to treat numeric predictor variables of TARGET_FLAG
+
+Thinking about it again, I think we should exclude both income and car value from the binary logistic regression. Correlation with car value was not super strong,and car value seems like it may have a lot of confounders. Correlation with income was better, but income is confounded with white picket fence index which was a very good predictor.
+
+As for motor vehicle record points, we will modify it a bit to have a better linear fit, but otherwise keep as-is.
+
+### Correlations of motor vehicle record points (modified) and white picket fence index with binary predictor variables of TARGET_FLAG
+
+Get correlation coefficients of motor vehicle record points (modified) and white picket fence index with binary predictor variables.
+
+```{r binary-vs-numeric-predictors-target-flag, echo=FALSE, eval=TRUE}
+binary_variables_data <- binary_variables_data[,setdiff(colnames(binary_variables_data),c("Married","Single_parent","Homeowner"))]
+
+motor_vehicle_record_points <- ifelse(motor_vehicle_record_points >= 7,motor_vehicle_record_points + 3,motor_vehicle_record_points)
+
+correlations_binary_with_motor_vehicle_record_points <- c()
+correlations_binary_with_white_picket_fence_index <- c()
+
+for(i in 1:ncol(binary_variables_data))
+{
+correlations_binary_with_motor_vehicle_record_points <- c(correlations_binary_with_motor_vehicle_record_points,cor(binary_variables_data[,i],motor_vehicle_record_points,use="pairwise.complete.obs"))
+correlations_binary_with_white_picket_fence_index <- c(correlations_binary_with_white_picket_fence_index,cor(binary_variables_data[,i],white_picket_fence_index,use="pairwise.complete.obs"))
+}
+
+print("Correlations with motor vehicle record points:")
+round(correlations_binary_with_motor_vehicle_record_points[order(correlations_binary_with_motor_vehicle_record_points)],digits=2)
+
+print("Correlations with white picket fence index:")
+round(correlations_binary_with_white_picket_fence_index[order(correlations_binary_with_white_picket_fence_index)],digits=2)
+
+print("Variable with correlation of 0.45 with motor vehicle record points:")
+colnames(binary_variables_data)[which(correlations_binary_with_motor_vehicle_record_points > 0.4)]
+```
+
+The only really strong correlation is between motor vehicle record points and having had a claim in the past 5 years. This makes sense.
+
+What does the distribution of points look like for those who have had a claim in the past 5 years vs. those who have not?
+
+```{r dist-claim-5yrs-vs-not-record-pts, echo=FALSE, eval=TRUE}
+par(mfrow=c(1,2))
+
+table_points_no_past_claim <- data.frame(table(motor_vehicle_record_points[binary_variables_data[,"Claim_in_5_yrs"] == 0]))
+table_points_yes_past_claim <- data.frame(table(motor_vehicle_record_points[binary_variables_data[,"Claim_in_5_yrs"] == 1]))
+
+barplot(t(data.frame(Freq = table_points_no_past_claim$Freq,row.names=as.vector(table_points_no_past_claim$Var1))),
+beside=TRUE,
+xlab="Motor vehicle record points (modified)",
+ylab="Number of records",
+main="No claim in 5 years")
+
+barplot(t(data.frame(Freq = table_points_yes_past_claim$Freq,row.names=as.vector(table_points_yes_past_claim$Var1))),
+beside=TRUE,
+xlab="Motor vehicle record points (modified)",
+ylab="Number of records",
+main="Yes claim in 5 years")
+```
+
+We find that individuals with more than 5 motor vehicle record points have almost always had a claim in the past 5 years.
+
+Unlike for the white picket fence index, I can't immediately think of a way to combine these variables. Despite the confound, I think we should start with including both and see how it goes.
+
+## Correlation of predictor variables with TARGET_AMT
+
+I think for TARGET_AMT we should try for a relatively simple model using just a few variables.
+
+Let's look at the correlation of car type, car age, and car value with TARGET_AMT (of course when TARGET_FLAG = 1).
+
+We should also look at all levels of car type again. We found that minivan vs. not was the re-level that made the most sense for TARGET_FLAG, but this is not necessarily the case for TARGET_AMT.
+
+Finally, look at the correlation of OLDCLAIM with TARGET_AMT when Claim_in_5_yrs is true.
+
+```{r correlation-car-vars-with-target-amt, echo=FALSE, eval=TRUE}
+nonzero_target_amt_records <- insurance[insurance$TARGET_FLAG == 1,]
+
+par(mfrow=c(1,1))
+
+boxplot(log10(TARGET_AMT) ~ factor(CAR_TYPE),
+data=nonzero_target_amt_records,
+xlab="Car type",
+ylab="log10(claim amount)",
+main="Records with a crash only")
+
+ggplot(nonzero_target_amt_records,
+aes(log10(BLUEBOOK),log10(TARGET_AMT))) +
+geom_point(alpha=1/10) +
+ggtitle("Records with a crash only")
+
+car_age_groups <- rep(NA,times=nrow(insurance))
+car_age_groups[insurance[,"CAR_AGE"] == 0 | insurance[,"CAR_AGE"] == 1] <- "<2"
+car_age_groups[insurance[,"CAR_AGE"] >= 2 & insurance[,"CAR_AGE"] <= 4] <- "2-4"
+car_age_groups[insurance[,"CAR_AGE"] >= 5 & insurance[,"CAR_AGE"] <= 9] <- "5-9"
+car_age_groups[insurance[,"CAR_AGE"] >= 10 & insurance[,"CAR_AGE"] <= 14] <- "10-14"
+car_age_groups[insurance[,"CAR_AGE"] >= 15 & insurance[,"CAR_AGE"] <= 19] <- "15-19"
+car_age_groups[insurance[,"CAR_AGE"] >= 20] <- "20+"
+
+boxplot(log10(TARGET_AMT) ~ factor(Car.age.group,levels=c("<2","2-4","5-9","10-14","15-19","20+")),
+data=data.frame(TARGET_AMT = nonzero_target_amt_records$TARGET_AMT,Car.age.group = car_age_groups[insurance$TARGET_FLAG == 1],check.names=FALSE),
+xlab="Car age group",
+ylab="log10(claim amount)",
+main="Records with a crash only")
+
+print("Percent of individuals with current claim that had a previous claim:")
+round((length(which(nonzero_target_amt_records$CLM_FREQ > 0))*100)/nrow(nonzero_target_amt_records),digits=2)
+
+ggplot(nonzero_target_amt_records[nonzero_target_amt_records$CLM_FREQ > 0,],
+aes(log10(OLDCLAIM),log10(TARGET_AMT))) +
+geom_point(alpha=1/10) +
+ggtitle("Records with a crash and previous claim only")
+```
+
+Really looks like these variables are not correlated at all!
+
+Maybe let's try income as well?
+
+```{r correlation-income-with-target-amt, echo=FALSE, eval=TRUE,message=FALSE,warning=FALSE}
+
+ggplot(nonzero_target_amt_records,
+aes(log10(INCOME + 1),log10(TARGET_AMT))) +
+geom_point(alpha=1/10) +
+ggtitle("Records with a crash only")
+```
+
+Also quite bad.
+
+What if we first try to model whether the claim will be less than $1,000, $1,000 to $9,999, or $10,000+?
+
+Let's look at factorized target amount vs. income, car value, and total value of previous claims.
+
+```{r factorize-target-amt, echo=FALSE, eval=TRUE}
+target_amt_factorized <- rep(0,times=nrow(nonzero_target_amt_records))
+target_amt_factorized[nonzero_target_amt_records$TARGET_AMT >= 1000] <- 1
+target_amt_factorized[nonzero_target_amt_records$TARGET_AMT >= 10000] <- 2
+
+table(target_amt_factorized)
+
+boxplot(log10(nonzero_target_amt_records$BLUEBOOK) ~ factor(target_amt_factorized),
+xlab="Target amount levels (1 = $1k-9,999, 2 = $10k+)",
+ylab="log10(car value)")
+
+boxplot(log10(nonzero_target_amt_records$INCOME + 1) ~ factor(target_amt_factorized),
+xlab="Target amount levels (1 = $1k-9,999, 2 = $10k+)",
+ylab="log10(income + 1)")
+
+boxplot(log10(nonzero_target_amt_records$OLDCLAIM[nonzero_target_amt_records$OLDCLAIM > 0]) ~ factor(target_amt_factorized[nonzero_target_amt_records$OLDCLAIM > 0]),
+xlab="Target amount levels (1 = $1k-9,999, 2 = $10k+)",
+ylab="log10(old claim total amount)",
+main="Records with a crash and previous claims only")
+```
+
+Definitely better, still not very good at all though.
+
+This is also not really helpful for the majority of cases anyway, which are $1,000 to $9,999 claims.
+
+Let's check the correlation coefficients of car age as a numeric variable, car value, income, and total value of previous claims (for when there were any) with log10(target amount).
+
+Convert income, car value, and total value of previous claims to log10 as well.
+
+```{r correlation-coefficients-vs-target-amt, echo=FALSE, eval=TRUE}
+print("Correlation log10(TARGET_AMT) with car age as a numeric variable:")
+round(cor(log10(nonzero_target_amt_records$TARGET_AMT),nonzero_target_amt_records$CAR_AGE,use="pairwise.complete.obs"),digits=2)
+
+print("Correlation log10(TARGET_AMT) with log10(BLUEBOOK):")
+round(cor(log10(nonzero_target_amt_records$TARGET_AMT),log10(nonzero_target_amt_records$BLUEBOOK),use="pairwise.complete.obs"),digits=2)
+
+print("Correlation log10(TARGET_AMT) with log10(INCOME + 1):")
+round(cor(log10(nonzero_target_amt_records$TARGET_AMT),log10(nonzero_target_amt_records$INCOME + 1),use="pairwise.complete.obs"),digits=2)
+
+print("Correlation log10(TARGET_AMT) with log10(OLDCLAIM):")
+round(cor(log10(nonzero_target_amt_records$TARGET_AMT[nonzero_target_amt_records$CLM_FREQ > 0]),log10(nonzero_target_amt_records$OLDCLAIM[nonzero_target_amt_records$CLM_FREQ > 0])),digits=2)
+```
+
+Based on plots and correlation coefficients, it seems like car value is the best predictor (even though it is still really not very good).
+
+One other variable to check - could motor vehicle record points maybe be correlated as well?
+
+```{r orrelation-coefficient-motor-vehicle-record-points-vs-target-amt, echo=FALSE, eval=TRUE}
+print("Correlation log10(TARGET_AMT) with motor vehicle record points:")
+round(cor(log10(nonzero_target_amt_records$TARGET_AMT),motor_vehicle_record_points[insurance$TARGET_FLAG == 1]),digits=2)
+```
+
+What about not log-transforming car value?
+
+```{r correlation-coefficient-car-value-not-log-vs-target-amt, echo=FALSE, eval=TRUE}
+print("Correlation log10(TARGET_AMT) with BLUEBOOK (not transformed):")
+round(cor(log10(nonzero_target_amt_records$TARGET_AMT),nonzero_target_amt_records$BLUEBOOK,use="pairwise.complete.obs"),digits=2)
+
+ggplot(nonzero_target_amt_records,
+aes(BLUEBOOK,log10(TARGET_AMT))) +
+geom_point(alpha=1/10)
+```
+
+Plot and coefficient are very similar.
+
+### Summary of conclusions from exploration of predictors vs. TARGET_AMT
+
+Car value really seems like the only variable that we should even consider for the linear model to predict TARGET_AMT.
+
+To have two different models, we can try both log10-transforming this variable as well as keeping it raw.
+
+I think we should definitely always log10-transform TARGET_AMT due to the larger range of this variable.
+
+# Data transformation
+
+The steps we need to take for data transformation are mainly summarized above.
+
+One last thing we need to do is deal with missing values. Of the variables we are considering keeping, we still have missing values to deal with for age and years on job.
+
+For age, it probably makes the most sense to just remove these records. There are only 6 of them out of over 8,000.
+
+I think we should also remove years on the job. It was not a fantastic predictor to begin with, and I don't think it is worth the trouble of trying to impute.
+
+Final summary of included variables and transformations for binary logistic regression:
+
+1. Commercial vehicle (binary)
+2. Revoked (binary)
+3. Urban vs. rural (binary)
+4. Claim_in_5_yrs (binary)
+5. 1plus_driving_children (binary)
+6. Minivan vs. other (binary)
+7. Bachelor’s or higher vs. high school or less (binary)
+8. Young.age (age < 25 vs. 25+) (binary)
+9. White picket fence index (numeric, 6 levels)
+10. Motor vehicle record points, modified (>10 points rounded down to 10. Then add 3 points when original points >= 7).
+
+For linear modeling, model log10(TARGET_AMT) as a function of BLUEBOOK (either log10-transformed or raw).
+
+```{r data-transformation, echo=FALSE, eval=TRUE}
+insurance_for_binary_logistic_regression <- data.frame(binary_variables_data[,setdiff(colnames(binary_variables_data),"Years_on_job_1plus")],
+Car_crash = insurance$TARGET_FLAG,
+Record_points = motor_vehicle_record_points,
+White_picket_fence_index = white_picket_fence_index,
+check.names=FALSE,stringsAsFactors=FALSE)
+
+insurance_for_binary_logistic_regression <- insurance_for_binary_logistic_regression[which(is.na(insurance_for_binary_logistic_regression[,"Young_age"]) == FALSE),]
+
+insurance_for_linear_model_target_amt <- insurance[insurance$TARGET_FLAG == 1,]
+
+insurance_for_linear_model_target_amt <- insurance_for_linear_model_target_amt[,c("TARGET_AMT","BLUEBOOK")]
+
+#apply(insurance_for_binary_logistic_regression,2,table)
+```
+
+# Data modeling
+
+## Binary logistic regression 
+
+### Including all variables discussed so far
+
+Let's start by simply running a binary logistic regression including all variables discussed so far.
+
+```{r binary-logistic-regression-all-vars, echo=FALSE, eval=TRUE}
+binary_logistic_regression_all_vars_model <- glm(Car_crash ~ .,data=insurance_for_binary_logistic_regression,family="binomial")
+
+summary(binary_logistic_regression_all_vars_model)
+
+numeric_predictions_using_binary_logistic_regression_all_vars <- predict(object = binary_logistic_regression_all_vars_model,newdata=insurance_for_binary_logistic_regression,type="response")
+
+factor_predictions_using_binary_logistic_regression_all_vars <- ifelse(numeric_predictions_using_binary_logistic_regression_all_vars > 0.5,1,0)
+
+#table(ifelse(insurance_for_binary_logistic_regression$Car_crash == 1,"Actual_car_crash","No_actual_car_crash"),
+#ifelse(factor_predictions_using_binary_logistic_regression_all_vars == 1,"Predicted_car_crash","Predicted_no_car_crash"))
+
+caret::confusionMatrix(data = factor_predictions_using_binary_logistic_regression_all_vars,
+reference = insurance_for_binary_logistic_regression$Car_crash,
+positive="1")
+```
+
+Despite all variables being quite significant in terms of p-value, model performance is not great. Accuracy less than 78%. 
+
+It seems like false negatives are a particular problem here. But that is perhaps the nature of this task? While certain individuals are more prone to car crashes, there is also an element of randomness in car crashes not fully predicted by knowing some basic demographic details about drivers. 
+
+Our specificity is actually decent (fairly low false positive rate). I suppose this would make customers happy that they aren't often going to be falsely flagged as risky. Though from the company's point of view, a bit less specificity to allow for more sensitivity might be preferred.
+
+During the model selection step, we may want to try reducing the probability threshold below 50% to call an individual as predicted to have a crash.
+
+### Removing age
+
+The significance of age was a lot less than for the other variables. Let's also try removing this variable.
+
+```{r binary-logistic-regression-all-but-age, echo=FALSE, eval=TRUE}
+binary_logistic_regression_minus_age_model <- glm(Car_crash ~ .,data=insurance_for_binary_logistic_regression[,setdiff(colnames(insurance_for_binary_logistic_regression),"Young_age")],family="binomial")
+
+summary(binary_logistic_regression_minus_age_model)
+
+numeric_predictions_using_binary_logistic_regression_minus_age <- predict(object = binary_logistic_regression_minus_age_model,newdata=insurance_for_binary_logistic_regression,type="response")
+
+factor_predictions_using_binary_logistic_regression_minus_age <- ifelse(numeric_predictions_using_binary_logistic_regression_minus_age > 0.5,1,0)
+
+caret::confusionMatrix(data = factor_predictions_using_binary_logistic_regression_minus_age,
+reference = insurance_for_binary_logistic_regression$Car_crash,
+positive="1")
+```
+
+Confusion matrix looks nearly identical. I don't think there is a strong argument for removing age, especially considering there is probably a reason most insurance companies include it in their models.
+
+### Minus "white picket fence index"
+
+While the "white picket fence index" provided a nice way to deal with collinear variables, it also means a less parsimonious model. How does the model look if we exclude this variable?
+
+```{r binary-logistic-regression-all-but-white-picket-fence, echo=FALSE, eval=TRUE}
+binary_logistic_regression_minus_white_picket_fence_model <- glm(Car_crash ~ .,data=insurance_for_binary_logistic_regression[,setdiff(colnames(insurance_for_binary_logistic_regression),"White_picket_fence_index")])
+
+summary(binary_logistic_regression_minus_white_picket_fence_model)
+
+numeric_predictions_using_binary_logistic_regression_minus_white_picket_fence <- predict(object = binary_logistic_regression_minus_white_picket_fence_model,newdata=insurance_for_binary_logistic_regression,type="response")
+
+factor_predictions_using_binary_logistic_regression_minus_white_picket_fence <- ifelse(numeric_predictions_using_binary_logistic_regression_minus_white_picket_fence > 0.5,1,0)
+
+caret::confusionMatrix(data = factor_predictions_using_binary_logistic_regression_minus_white_picket_fence,
+reference = insurance_for_binary_logistic_regression$Car_crash,
+positive="1")
+```
+
+Looks like this decreases our sensitivity even more, which is the exact opposite of what we want!
+
+### Summary of possible binary logistic regression models
+
+It seems like despite not having great performance, a model based on all variables previously discussed (including age and white picket fence index) is our best bet.
+
+During the model selection step, we can play around with the threshold for when to call an individual as being a probable crash risk. 
+
+## Linear modeling of claim amount
